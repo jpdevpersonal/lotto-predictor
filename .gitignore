@@ -1,0 +1,5 @@
+lotto.db
+bin/
+obj/
+node_modules/
+dist/

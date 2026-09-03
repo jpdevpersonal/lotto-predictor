@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="LottoPredictor.Api/LottoPredictor.Api.csproj" />
+  <Project Path="LottoPredictor.Core/LottoPredictor.Core.csproj" />
+  <Project Path="LottoPredictor.Tests/LottoPredictor.Tests.csproj" />
+</Solution>
