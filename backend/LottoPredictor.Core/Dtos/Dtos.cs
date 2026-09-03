@@ -11,11 +11,11 @@ public record DrawDto(
     string BallSet,
     string Source);
 
-public record AddDrawRequest(int[] Numbers);
+public record AddDrawRequest(int[] Numbers, int? Bonus = null);
 
-public record AddDrawRoundsRequest(int[][] Rounds);
+public record AddDrawRoundsRequest(int[][] Rounds, int?[]? Bonuses = null);
 
-public record UpdateDrawRequest(int[] Numbers);
+public record UpdateDrawRequest(int[] Numbers, int? Bonus = null);
 
 public record DrawHistoryDto(
     IReadOnlyList<DrawDto> Items,
@@ -47,6 +47,20 @@ public record PredictionDto(
     int[]? ActualNumbers,
     int? Matches,
     IReadOnlyList<NumberExplanationDto>? Explanation);
+
+public record PredictionLineDto(int Rank, int[] Numbers, double Score);
+
+public record PredictionLinesDto(
+    string StrategyName,
+    int CutoffDrawNumber,
+    IReadOnlyList<PredictionLineDto> Lines);
+
+public record BestOfLinesDto(
+    int[] Numbers,
+    int[] Frequencies,
+    int LinesConsidered,
+    string StrategyName,
+    int CutoffDrawNumber);
 
 public record NumberStatsDto(
     int Number,

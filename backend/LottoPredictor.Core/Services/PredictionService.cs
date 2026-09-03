@@ -11,6 +11,10 @@ public interface IPredictionService
     Task<PredictionDto> GenerateAsync(CancellationToken ct = default);
     Task<PredictionDto?> GetLatestAsync(CancellationToken ct = default);
     Task<IReadOnlyList<PredictionDto>> GetHistoryAsync(int limit = 100, CancellationToken ct = default);
+    /// <summary>Top-N candidate lines, computed on demand and never persisted.</summary>
+    Task<PredictionLinesDto> GenerateLinesAsync(int count = 50, CancellationToken ct = default);
+    /// <summary>Consensus line over the same top-N lines (screen-only).</summary>
+    Task<BestOfLinesDto> GenerateBestOfLinesAsync(int count = 50, CancellationToken ct = default);
 }
 
 public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory, IAnalysisService analysis)
@@ -44,6 +48,52 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
             .Select(sn => ToExplanation(sn.Features, sn.Score))
             .ToList();
         return ToDto(prediction, explanation);
+    }
+
+    public async Task<PredictionLinesDto> GenerateLinesAsync(int count = 50, CancellationToken ct = default)
+    {
+        count = Math.Clamp(count, 1, 200);
+        var snapshot = await analysis.GetSnapshotAsync(ct);
+        var (scores, strategy) = ActiveScores(snapshot);
+        var lines = PredictionEngine.GenerateTopLines(snapshot.Features, scores, strategy, count);
+        return new PredictionLinesDto(
+            snapshot.ActiveStrategy.Name,
+            snapshot.Draws[^1].DrawNumber,
+            lines.Select((l, i) => new PredictionLineDto(i + 1, l.Numbers, Math.Round(l.SetScore, 4))).ToList());
+    }
+
+    public async Task<BestOfLinesDto> GenerateBestOfLinesAsync(int count = 50, CancellationToken ct = default)
+    {
+        count = Math.Clamp(count, 1, 200);
+        var snapshot = await analysis.GetSnapshotAsync(ct);
+        var (scores, strategy) = ActiveScores(snapshot);
+        var lines = PredictionEngine.GenerateTopLines(snapshot.Features, scores, strategy, count);
+        var (numbers, frequencies) = PredictionEngine.Consensus(lines, scores);
+        return new BestOfLinesDto(
+            numbers, frequencies, lines.Count,
+            snapshot.ActiveStrategy.Name, snapshot.Draws[^1].DrawNumber);
+    }
+
+    /// <summary>Score map and combination weights for the currently active strategy,
+    /// handling the hedge ensemble the same way as single prediction generation.</summary>
+    private static (Dictionary<int, double> Scores, ScoringStrategy Strategy) ActiveScores(
+        AnalysisSnapshot snapshot)
+    {
+        var strategy = snapshot.ActiveStrategy;
+        if (strategy.Name != Backtester.EnsembleName)
+            return (PredictionEngine.ScoreNumbers(snapshot.Features, strategy), strategy);
+
+        double total = snapshot.AllStrategies.Sum(s => snapshot.HedgeWeights.GetValueOrDefault(s.Name));
+        var parts = snapshot.AllStrategies
+            .Select(s => (PredictionEngine.ScoreNumbers(snapshot.Features, s),
+                total > 0 ? snapshot.HedgeWeights.GetValueOrDefault(s.Name) / total : 1.0 / snapshot.AllStrategies.Count))
+            .ToList();
+        var blended = PredictionEngine.BlendScores(parts);
+        double pairW = snapshot.AllStrategies.Sum(s =>
+            (total > 0 ? snapshot.HedgeWeights.GetValueOrDefault(s.Name) / total : 1.0 / snapshot.AllStrategies.Count) * s.PairWeight);
+        double penW = snapshot.AllStrategies.Sum(s =>
+            (total > 0 ? snapshot.HedgeWeights.GetValueOrDefault(s.Name) / total : 1.0 / snapshot.AllStrategies.Count) * s.PenaltyWeight);
+        return (blended, new ScoringStrategy(Backtester.EnsembleName, 0, 0, 0, 0, pairW, penW));
     }
 
     public async Task<PredictionDto?> GetLatestAsync(CancellationToken ct = default)

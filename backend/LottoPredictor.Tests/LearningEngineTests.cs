@@ -119,7 +119,7 @@ public class LearningEngineTests
 
         foreach (var c in g5a)
         {
-            double sum = c.WLongTerm + c.WRecent + c.WGap + c.WMomentum + c.WBias;
+            double sum = c.WLongTerm + c.WRecent + c.WGap + c.WMomentum + c.WBias + c.WBonus;
             Assert.Equal(1.0, sum, 2);
             Assert.InRange(c.PairWeight, 0.0, 1.0);
             Assert.InRange(c.PenaltyWeight, 0.0, 2.0);

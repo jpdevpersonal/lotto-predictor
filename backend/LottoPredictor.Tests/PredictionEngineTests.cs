@@ -69,4 +69,27 @@ public class PredictionEngineTests
         var scores = PredictionEngine.ScoreNumbers(fs, ScoringStrategy.Candidates[0]);
         Assert.All(scores.Keys, n => Assert.InRange(n, 1, 49));
     }
+
+    [Fact]
+    public void Top_lines_are_distinct_sorted_and_consensus_is_valid()
+    {
+        var draws = RandomHistory(300, 59);
+        var fs = FeatureCalculator.Compute(draws);
+        var strategy = ScoringStrategy.Candidates[0];
+        var scores = PredictionEngine.ScoreNumbers(fs, strategy);
+
+        var lines = PredictionEngine.GenerateTopLines(fs, scores, strategy, 50);
+
+        Assert.Equal(50, lines.Count);
+        Assert.Equal(50, lines.Select(l => string.Join(",", l.Numbers)).Distinct().Count());
+        for (int i = 1; i < lines.Count; i++)
+            Assert.True(lines[i - 1].SetScore >= lines[i].SetScore);
+        // Line 1 must equal the single best prediction.
+        Assert.Equal(PredictionEngine.Generate(fs, strategy).Numbers, lines[0].Numbers);
+
+        var (numbers, frequencies) = PredictionEngine.Consensus(lines, scores);
+        Assert.Equal(6, numbers.Distinct().Count());
+        Assert.Equal(numbers.OrderBy(x => x), numbers);
+        Assert.All(frequencies, f => Assert.InRange(f, 1, 50));
+    }
 }

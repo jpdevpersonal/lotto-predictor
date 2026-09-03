@@ -15,8 +15,10 @@ export default function DrawHistory() {
   const [loadingAll, setLoadingAll] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<string[]>(emptyNumbers());
+  const [editBonus, setEditBonus] = useState("");
   const [showAddRound, setShowAddRound] = useState(false);
   const [roundValues, setRoundValues] = useState<string[]>(emptyNumbers());
+  const [roundBonus, setRoundBonus] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -40,6 +42,7 @@ export default function DrawHistory() {
   const beginEdit = (draw: DrawDto) => {
     setEditingId(draw.id);
     setEditValues(draw.numbers.map(String));
+    setEditBonus(draw.bonus?.toString() ?? "");
     setShowAddRound(false);
     setError("");
   };
@@ -53,7 +56,8 @@ export default function DrawHistory() {
 
     setSaving(true);
     try {
-      await api.updateDraw(editingId, numbers);
+      const bonus = editBonus.trim() === "" ? null : parseInt(editBonus, 10);
+      await api.updateDraw(editingId, numbers, bonus);
       setEditingId(null);
       await load(showingAll);
     } catch (saveError) {
@@ -76,8 +80,10 @@ export default function DrawHistory() {
 
     setSaving(true);
     try {
-      await api.addLatestRound(numbers);
+      const bonus = roundBonus.trim() === "" ? null : parseInt(roundBonus, 10);
+      await api.addLatestRound(numbers, bonus);
       setRoundValues(emptyNumbers());
+      setRoundBonus("");
       setShowAddRound(false);
       await load(showingAll);
     } catch (saveError) {
@@ -122,7 +128,7 @@ export default function DrawHistory() {
         <div>
           <h2>Draw History</h2>
           <p className="muted">
-            Review every stored round and correct its six numbers.
+            Review every stored round and correct its six numbers or bonus ball.
           </p>
         </div>
         {canAddLatestRound && (
@@ -161,6 +167,15 @@ export default function DrawHistory() {
                 }
               />
             ))}
+            <input
+              type="number"
+              min={1}
+              max={59}
+              value={roundBonus}
+              aria-label="New round bonus ball"
+              placeholder="Bonus"
+              onChange={(event) => setRoundBonus(event.target.value)}
+            />
           </div>
           <div className="inline-actions">
             <button onClick={addMissingRound} disabled={saving}>
@@ -191,6 +206,7 @@ export default function DrawHistory() {
                   <th>Date</th>
                   <th>Round</th>
                   <th>Numbers</th>
+                  <th>Bonus</th>
                   <th>Source</th>
                   <th>Action</th>
                 </tr>
@@ -229,6 +245,23 @@ export default function DrawHistory() {
                           <span className="history-numbers">
                             {draw.numbers.join("  ")}
                           </span>
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={1}
+                            max={59}
+                            value={editBonus}
+                            aria-label={`Draw ${draw.drawNumber}, bonus ball`}
+                            placeholder="Bonus"
+                            onChange={(event) =>
+                              setEditBonus(event.target.value)
+                            }
+                          />
+                        ) : (
+                          (draw.bonus ?? "—")
                         )}
                       </td>
                       <td>{draw.source}</td>

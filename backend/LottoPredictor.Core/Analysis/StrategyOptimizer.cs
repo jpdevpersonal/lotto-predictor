@@ -44,6 +44,7 @@ public static class StrategyOptimizer
                 Pick(rng, a.WGap, b.WGap) + Gaussian(rng, sigma * 0.5),
                 Pick(rng, a.WMomentum, b.WMomentum) + Gaussian(rng, sigma * 0.5),
                 Pick(rng, a.WBias, b.WBias) + Gaussian(rng, sigma * 0.5),
+                Pick(rng, a.WBonus, b.WBonus) + Gaussian(rng, sigma * 0.5),
                 Pick(rng, a.PairWeight, b.PairWeight) + Gaussian(rng, sigma * 0.3),
                 Pick(rng, a.PenaltyWeight, b.PenaltyWeight) + Gaussian(rng, sigma * 0.6));
             candidates.Add(child);
@@ -54,13 +55,13 @@ public static class StrategyOptimizer
             candidates.Add(Normalise(
                 $"learned-g{generation}-{index++}",
                 rng.NextDouble(), rng.NextDouble(), rng.NextDouble(), rng.NextDouble(),
-                rng.NextDouble(), rng.NextDouble(), rng.NextDouble() * 2.0));
+                rng.NextDouble(), rng.NextDouble(), rng.NextDouble(), rng.NextDouble() * 2.0));
 
         return candidates;
     }
 
     public static ScoringStrategy ToStrategy(LearnedStrategy s) => new(
-        s.Name, s.WLongTerm, s.WRecent, s.WGap, s.WMomentum, s.PairWeight, s.PenaltyWeight, s.WBias);
+        s.Name, s.WLongTerm, s.WRecent, s.WGap, s.WMomentum, s.PairWeight, s.PenaltyWeight, s.WBias, s.WBonus);
 
     private static ScoringStrategy Mutate(ScoringStrategy seed, string name, Random rng, double sigma) =>
         Normalise(
@@ -70,23 +71,25 @@ public static class StrategyOptimizer
             seed.WGap + Gaussian(rng, sigma),
             seed.WMomentum + Gaussian(rng, sigma),
             seed.WBias + Gaussian(rng, sigma),
+            seed.WBonus + Gaussian(rng, sigma),
             seed.PairWeight + Gaussian(rng, sigma * 0.6),
             seed.PenaltyWeight + Gaussian(rng, sigma * 1.2));
 
     private static double Pick(Random rng, double a, double b) => rng.Next(2) == 0 ? a : b;
 
-    /// <summary>Clamp weights to sane ranges and normalise the five score weights to sum 1,
+    /// <summary>Clamp weights to sane ranges and normalise the six score weights to sum 1,
     /// so learned strategies stay comparable to the hand-written ones.</summary>
     private static ScoringStrategy Normalise(
         string name, double wLong, double wRecent, double wGap, double wMomentum, double wBias,
-        double pair, double penalty)
+        double wBonus, double pair, double penalty)
     {
         wLong = Math.Max(0, wLong);
         wRecent = Math.Max(0, wRecent);
         wGap = Math.Max(0, wGap);
         wMomentum = Math.Max(0, wMomentum);
         wBias = Math.Max(0, wBias);
-        double sum = wLong + wRecent + wGap + wMomentum + wBias;
+        wBonus = Math.Max(0, wBonus);
+        double sum = wLong + wRecent + wGap + wMomentum + wBias + wBonus;
         if (sum < 1e-9) { wLong = 1; sum = 1; }
         return new ScoringStrategy(
             name,
@@ -96,7 +99,8 @@ public static class StrategyOptimizer
             Math.Round(wMomentum / sum, 4),
             Math.Round(Math.Clamp(pair, 0.0, 1.0), 4),
             Math.Round(Math.Clamp(penalty, 0.0, 2.0), 4),
-            Math.Round(wBias / sum, 4));
+            Math.Round(wBias / sum, 4),
+            Math.Round(wBonus / sum, 4));
     }
 
     private static double Gaussian(Random rng, double std)

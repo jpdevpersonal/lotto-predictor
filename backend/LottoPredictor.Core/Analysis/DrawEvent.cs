@@ -2,7 +2,7 @@ namespace LottoPredictor.Core.Analysis;
 
 /// <summary>Lightweight, immutable view of a draw used by the analysis engine.
 /// Numbers are always sorted ascending.</summary>
-public sealed record DrawEvent(int Sequence, int DrawNumber, DateOnly Date, int[] Numbers);
+public sealed record DrawEvent(int Sequence, int DrawNumber, DateOnly Date, int[] Numbers, int? Bonus = null);
 
 /// <summary>Describes the ball pool inferred from the data. The UK-style dataset switched from a
 /// 1-49 pool to a 1-59 pool partway through; numbers 50+ are only "eligible" from the first draw

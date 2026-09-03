@@ -58,7 +58,7 @@ public class AnalysisService(IDbContextFactory<LottoDbContext> contextFactory, A
                 throw new InvalidOperationException("No draws in database; import the CSV first.");
 
             var events = draws
-                .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers()))
+                .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(), d.Bonus))
                 .ToList();
 
             var features = FeatureCalculator.Compute(events);
@@ -139,6 +139,7 @@ public class AnalysisService(IDbContextFactory<LottoDbContext> contextFactory, A
                 PairWeight = s.PairWeight,
                 PenaltyWeight = s.PenaltyWeight,
                 WBias = s.WBias,
+                WBonus = s.WBonus,
                 Generation = generation,
                 AvgMatches = r.AvgMatches,
                 RecencyWeightedAvg = r.RecencyWeightedAvg,

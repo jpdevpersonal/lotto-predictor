@@ -16,7 +16,7 @@ public sealed record PredictionResult(
 /// clustering). Atypical sets are penalised, never excluded.</summary>
 public static class PredictionEngine
 {
-    private const int CandidatePoolSize = 14;
+    private const int CandidatePoolSize = 18;
 
     /// <summary>Per-number scores under a strategy. Key = ball number.</summary>
     public static Dictionary<int, double> ScoreNumbers(FeatureSet fs, ScoringStrategy s)
@@ -25,9 +25,10 @@ public static class PredictionEngine
         if (eligible.Length < 6)
             eligible = fs.Numbers.Where(f => f.EligibleDraws > 0).ToArray();
 
-        var zFreq = ZScores(eligible, f => f.FreqRate);
-        var zRecent = ZScores(eligible, f => f.RecentRate);
+        var zFreq = ZScores(eligible, f => f.FreqRateShrunk);
+        var zRecent = ZScores(eligible, f => f.RecentRateShrunk);
         var zMomentum = ZScores(eligible, f => f.RecentVsLongTerm);
+        var zBonus = ZScores(eligible, f => f.BonusRate);
 
         var scores = new Dictionary<int, double>(eligible.Length);
         for (int i = 0; i < eligible.Length; i++)
@@ -39,7 +40,8 @@ public static class PredictionEngine
                 s.WRecent * zRecent[i] +
                 s.WGap * gapTerm +
                 s.WMomentum * Math.Clamp(zMomentum[i], -3.0, 3.0) +
-                s.WBias * Math.Clamp(f.BiasZ, -3.0, 3.0);
+                s.WBias * Math.Clamp(f.BiasZ, -3.0, 3.0) +
+                s.WBonus * Math.Clamp(zBonus[i], -3.0, 3.0);
         }
         return scores;
     }
@@ -86,6 +88,65 @@ public static class PredictionEngine
 
         var selected = best!.Select(v => new ScoredNumber(fs.For(v), scores[v])).ToList();
         return new PredictionResult(best!, strategy, selected, bestScore, bestPenalty, bestSynergy);
+    }
+
+    /// <summary>The top-ranked distinct lines under a strategy, best first. Same deterministic
+    /// combination search as the single prediction, but keeping the N best sets.</summary>
+    public static IReadOnlyList<PredictionResult> GenerateTopLines(
+        FeatureSet fs, Dictionary<int, double> scores, ScoringStrategy strategy, int count)
+    {
+        if (scores.Count < 6)
+            throw new InvalidOperationException("Not enough historical data to score six numbers.");
+
+        var ranked = scores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
+            .Select(kv => kv.Key).ToArray();
+        var candidates = ranked.Take(Math.Min(CandidatePoolSize, ranked.Length)).ToArray();
+
+        var all = new List<(int[] Set, double Total, double Penalty, double Synergy)>();
+        foreach (var combo in Combinations(candidates.Length, 6))
+        {
+            var set = new int[6];
+            for (int i = 0; i < 6; i++) set[i] = candidates[combo[i]];
+            Array.Sort(set);
+
+            double numberScore = set.Sum(v => scores[v]);
+            double synergy = PairSynergy(fs, set);
+            double penalty = TypicalityPenalty(fs, set);
+            all.Add((set, numberScore + strategy.PairWeight * synergy - strategy.PenaltyWeight * penalty,
+                penalty, synergy));
+        }
+
+        return all
+            .OrderByDescending(l => l.Total)
+            .ThenBy(l => l.Set, Comparer<int[]>.Create(CompareLex))
+            .Take(count)
+            .Select(l => new PredictionResult(
+                l.Set, strategy,
+                l.Set.Select(v => new ScoredNumber(fs.For(v), scores[v])).ToList(),
+                l.Total, l.Penalty, l.Synergy))
+            .ToList();
+    }
+
+    /// <summary>Consensus line over a set of lines: the six numbers that appear in the most
+    /// lines, tie-broken by per-number score. A different aggregation from the line ranking,
+    /// so it can differ from line 1.</summary>
+    public static (int[] Numbers, int[] Frequencies) Consensus(
+        IReadOnlyList<PredictionResult> lines, Dictionary<int, double> scores)
+    {
+        var freq = new Dictionary<int, int>();
+        foreach (var line in lines)
+            foreach (var n in line.Numbers)
+                freq[n] = freq.GetValueOrDefault(n) + 1;
+
+        var chosen = freq
+            .OrderByDescending(kv => kv.Value)
+            .ThenByDescending(kv => scores.GetValueOrDefault(kv.Key))
+            .ThenBy(kv => kv.Key)
+            .Take(6)
+            .Select(kv => kv.Key)
+            .OrderBy(n => n)
+            .ToArray();
+        return (chosen, chosen.Select(n => freq[n]).ToArray());
     }
 
     /// <summary>Standardises each strategy's score map to N(0,1) across numbers, then combines

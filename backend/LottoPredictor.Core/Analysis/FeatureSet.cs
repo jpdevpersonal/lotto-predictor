@@ -12,6 +12,10 @@ public sealed class NumberFeatures
     /// <summary>TotalCount / EligibleDraws.</summary>
     public double FreqRate { get; init; }
 
+    /// <summary>FreqRate shrunk toward the fair-machine rate (Bayesian pseudo-count prior).
+    /// Used for scoring so low-sample numbers do not dominate through noise.</summary>
+    public double FreqRateShrunk { get; init; }
+
     public int Count10 { get; init; }
     public int Count25 { get; init; }
     public int Count50 { get; init; }
@@ -19,6 +23,15 @@ public sealed class NumberFeatures
 
     /// <summary>Blended per-draw appearance rate over the recent windows.</summary>
     public double RecentRate { get; init; }
+
+    /// <summary>RecentRate shrunk toward the fair-machine rate. Used for scoring.</summary>
+    public double RecentRateShrunk { get; init; }
+
+    /// <summary>Times drawn as the bonus ball while eligible.</summary>
+    public int BonusCount { get; init; }
+
+    /// <summary>Shrunk per-draw bonus appearance rate (prior 1/(pool-6)).</summary>
+    public double BonusRate { get; init; }
 
     /// <summary>Draws since the number last appeared (0 = appeared in latest draw).</summary>
     public int DrawsSinceLast { get; init; }

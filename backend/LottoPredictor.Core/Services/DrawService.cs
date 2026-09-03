@@ -98,7 +98,7 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
 
     public async Task<DrawDto> AddDrawAsync(AddDrawRequest request, CancellationToken ct = default)
     {
-        var added = await AddRoundsAsync([request.Numbers], ct);
+        var added = await AddRoundsAsync([request.Numbers], [request.Bonus], ct);
         return added[0];
     }
 
@@ -107,15 +107,17 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
     {
         if (request.Rounds is not { Length: 2 })
             throw new ValidationFailedException(["Exactly two rounds of six numbers are required."]);
+        if (request.Bonuses is { Length: not 2 })
+            throw new ValidationFailedException(["Provide one bonus value per round."]);
 
-        return await AddRoundsAsync(request.Rounds, ct);
+        return await AddRoundsAsync(request.Rounds, request.Bonuses ?? [null, null], ct);
     }
 
     public async Task<DrawDto> AddLatestRoundAsync(
         AddDrawRequest request, CancellationToken ct = default)
     {
         var snapshot = await analysis.GetSnapshotAsync(ct);
-        var errors = NumberValidator.Validate(request.Numbers, snapshot.PoolSize);
+        var errors = ValidateResult(request.Numbers, request.Bonus, snapshot.PoolSize);
         if (errors.Count > 0) throw new ValidationFailedException(errors);
 
         await using var db = await contextFactory.CreateDbContextAsync(ct);
@@ -136,6 +138,7 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
             Source = "manual",
         };
         draw.SetNumbers(request.Numbers);
+        draw.Bonus = request.Bonus;
         db.Draws.Add(draw);
 
         var outstanding = await db.Predictions
@@ -156,13 +159,14 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
         int id, UpdateDrawRequest request, CancellationToken ct = default)
     {
         var snapshot = await analysis.GetSnapshotAsync(ct);
-        var errors = NumberValidator.Validate(request.Numbers, snapshot.PoolSize);
+        var errors = ValidateResult(request.Numbers, request.Bonus, snapshot.PoolSize);
         if (errors.Count > 0) throw new ValidationFailedException(errors);
 
         await using var db = await contextFactory.CreateDbContextAsync(ct);
         var draw = await db.Draws.FirstOrDefaultAsync(item => item.Id == id, ct)
             ?? throw new KeyNotFoundException($"Draw {id} was not found.");
         draw.SetNumbers(request.Numbers);
+        draw.Bonus = request.Bonus;
 
         var evaluatedPredictions = await db.Predictions
             .Where(prediction => prediction.EvaluatedDrawId == draw.Id)
@@ -175,11 +179,11 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
     }
 
     private async Task<IReadOnlyList<DrawDto>> AddRoundsAsync(
-        IReadOnlyList<int[]> rounds, CancellationToken ct)
+        IReadOnlyList<int[]> rounds, IReadOnlyList<int?> bonuses, CancellationToken ct)
     {
         var snapshot = await analysis.GetSnapshotAsync(ct);
         var errors = rounds
-            .SelectMany((numbers, index) => NumberValidator.Validate(numbers, snapshot.PoolSize)
+            .SelectMany((numbers, index) => ValidateResult(numbers, bonuses[index], snapshot.PoolSize)
                 .Select(error => rounds.Count > 1 ? $"Round {index + 1}: {error}" : error))
             .ToList();
         if (errors.Count > 0) throw new ValidationFailedException(errors);
@@ -200,6 +204,7 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
                 Machine = $"Manual Round {index + 1}",
                 BallSet = "",
                 Source = "manual",
+                Bonus = bonuses[index],
             };
             draw.SetNumbers(numbers);
             return draw;
@@ -224,6 +229,16 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
 
         analysis.Invalidate();
         return added.Select(ToDto).ToList();
+    }
+
+    private static IReadOnlyList<string> ValidateResult(int[] numbers, int? bonus, int poolSize)
+    {
+        var errors = NumberValidator.Validate(numbers, poolSize).ToList();
+        if (bonus is < 1 || bonus > poolSize)
+            errors.Add($"Bonus ball must be between 1 and {poolSize}.");
+        else if (bonus.HasValue && numbers.Contains(bonus.Value))
+            errors.Add("Bonus ball must be different from the six main numbers.");
+        return errors;
     }
 
     private static void EvaluatePredictions(IEnumerable<Prediction> predictions, Draw draw)

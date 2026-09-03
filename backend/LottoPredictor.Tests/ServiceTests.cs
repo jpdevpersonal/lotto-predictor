@@ -109,7 +109,7 @@ public sealed class ServiceTests : IDisposable
         var rounds = await _drawService.AddDrawRoundsAsync(new AddDrawRoundsRequest([
             [5, 10, 15, 20, 25, 59],
             [3, 12, 21, 30, 39, 48],
-        ]));
+        ], [7, 8]));
 
         Assert.Equal(2, rounds.Count);
         Assert.Equal([201, 202], rounds.Select(draw => draw.Sequence));
@@ -117,7 +117,23 @@ public sealed class ServiceTests : IDisposable
         Assert.Equal(rounds[0].Date, rounds[1].Date);
         Assert.Equal("Manual Round 1", rounds[0].Machine);
         Assert.Equal("Manual Round 2", rounds[1].Machine);
+        Assert.Equal([7, 8], rounds.Select(draw => draw.Bonus));
         Assert.Equal(202, await _drawService.CountAsync());
+    }
+
+    [Fact]
+    public async Task Bonus_ball_can_be_updated_but_cannot_duplicate_a_main_number()
+    {
+        SeedDraws(200);
+        var added = await _drawService.AddDrawAsync(
+            new AddDrawRequest([5, 10, 15, 20, 25, 59], 7));
+
+        var updated = await _drawService.UpdateDrawAsync(
+            added.Id, new UpdateDrawRequest(added.Numbers, 8));
+
+        Assert.Equal(8, updated.Bonus);
+        await Assert.ThrowsAsync<ValidationFailedException>(() =>
+            _drawService.UpdateDrawAsync(added.Id, new UpdateDrawRequest(added.Numbers, 10)));
     }
 
     [Fact]
@@ -235,7 +251,7 @@ public sealed class ServiceTests : IDisposable
         Assert.Equal(200, prediction.CutoffSequence);
         Assert.NotNull(prediction.Explanation);
         Assert.Equal(6, prediction.Explanation!.Count);
-        Assert.StartsWith("v2/", prediction.ModelVersion);
+        Assert.StartsWith("v3/", prediction.ModelVersion);
         Assert.Null(prediction.Matches);
 
         var latest = await _predictionService.GetLatestAsync();

@@ -11,13 +11,14 @@ public sealed record ScoringStrategy(
     double WMomentum,
     double PairWeight,
     double PenaltyWeight,
-    double WBias = 0.0) // weight on the Bayesian bias z-score (physical-bias detector)
+    double WBias = 0.0, // weight on the Bayesian bias z-score (physical-bias detector)
+    double WBonus = 0.0) // weight on the bonus-ball appearance rate
 {
-    public string Version => $"v2/{Name}";
+    public string Version => $"v3/{Name}";
 
     public string Describe() =>
         $"long-term={WLongTerm:0.##}, recent={WRecent:0.##}, gap={WGap:0.##}, momentum={WMomentum:0.##}, " +
-        $"bias={WBias:0.##}, pair={PairWeight:0.##}, typicality-penalty={PenaltyWeight:0.##}";
+        $"bias={WBias:0.##}, bonus={WBonus:0.##}, pair={PairWeight:0.##}, typicality-penalty={PenaltyWeight:0.##}";
 
     public static IReadOnlyList<ScoringStrategy> Candidates { get; } =
     [
@@ -26,6 +27,7 @@ public sealed record ScoringStrategy(
         new("overdue-gap",         0.0, 0.0, 1.0, 0.0, 0.25, 1.0),
         new("momentum",            0.0, 0.0, 0.0, 1.0, 0.25, 1.0),
         new("bias-detector",       0.0, 0.0, 0.0, 0.0, 0.25, 1.0, 1.0),
+        new("bonus-aware",         0.4, 0.2, 0.0, 0.0, 0.25, 1.0, 0.2, 0.2),
         new("blend-freq-recent",   0.5, 0.3, 0.0, 0.2, 0.25, 1.0),
         new("blend-freq-gap",      0.5, 0.2, 0.3, 0.0, 0.25, 1.0),
         new("blend-uniform",       0.2, 0.2, 0.2, 0.2, 0.25, 1.0, 0.2),

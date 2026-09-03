@@ -44,6 +44,26 @@ export interface PredictionDto {
   explanation: NumberExplanationDto[] | null;
 }
 
+export interface PredictionLineDto {
+  rank: number;
+  numbers: number[];
+  score: number;
+}
+
+export interface PredictionLinesDto {
+  strategyName: string;
+  cutoffDrawNumber: number;
+  lines: PredictionLineDto[];
+}
+
+export interface BestOfLinesDto {
+  numbers: number[];
+  frequencies: number[];
+  linesConsidered: number;
+  strategyName: string;
+  cutoffDrawNumber: number;
+}
+
 export interface StrategyBacktestDto {
   name: string;
   weights: string;

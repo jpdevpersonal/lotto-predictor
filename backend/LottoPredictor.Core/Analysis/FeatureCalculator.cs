@@ -22,9 +22,11 @@ public static class FeatureCalculator
         }
         var pairCounts = new int[p + 1, p + 1];
         var tripleCounts = new Dictionary<(int, int, int), int>();
+        var bonusCounts = new int[p + 1];
 
         for (int i = 0; i < n; i++)
         {
+            if (draws[i].Bonus is int bb && bb >= 1 && bb <= p) bonusCounts[bb]++;
             var nums = draws[i].Numbers;
             for (int j = 0; j < 6; j++)
             {
@@ -93,6 +95,17 @@ public static class FeatureCalculator
             double variance = era1 * q1 * (1 - q1) + era2 * q2 * (1 - q2);
             double biasZ = variance > 1e-9 ? (total - expected) / Math.Sqrt(variance) : 0;
 
+            // Bayesian shrinkage toward the fair rate: ~20 pseudo-draws of prior evidence.
+            const double shrink = 20.0;
+            double qNow = 6.0 / pool.PoolAt(n - 1);
+            double qBar = eligible > 0 ? expected / eligible : qNow;
+            double freqShrunk = (total + shrink * qBar) / (Math.Max(0, eligible) + shrink);
+            double recentShrunk = (recentRate * w100 + shrink * qNow) / (w100 + shrink);
+            double rate50Shrunk = (c50 + shrink * qNow) / (w50 + shrink);
+
+            double bonusPrior = 1.0 / Math.Max(1, p - 6);
+            double bonusRate = (bonusCounts[v] + shrink * bonusPrior) / (Math.Max(0, eligible) + shrink);
+
             features[v - 1] = new NumberFeatures
             {
                 Number = v,
@@ -104,10 +117,14 @@ public static class FeatureCalculator
                 Count50 = c50,
                 Count100 = c100,
                 RecentRate = recentRate,
+                FreqRateShrunk = freqShrunk,
+                RecentRateShrunk = recentShrunk,
+                BonusCount = bonusCounts[v],
+                BonusRate = bonusRate,
                 DrawsSinceLast = drawsSinceLast,
                 AvgGap = avgGap,
                 GapRatio = avgGap > 0 ? drawsSinceLast / avgGap : 0,
-                RecentVsLongTerm = freqRate > 0 ? rate50 / freqRate : 0,
+                RecentVsLongTerm = rate50Shrunk / freqShrunk,
                 BiasZ = biasZ,
                 PositionCounts = positionCounts[v],
             };

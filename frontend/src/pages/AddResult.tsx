@@ -8,6 +8,7 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
     emptyRound(),
     emptyRound(),
   ]);
+  const [bonuses, setBonuses] = useState(["", ""]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -30,9 +31,16 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
       setError("Please enter all six numbers in both rounds.");
       return;
     }
+    const parsedBonuses = bonuses.map((value) =>
+      value.trim() === "" ? null : parseInt(value, 10),
+    );
+    if (parsedBonuses.some((bonus) => bonus != null && Number.isNaN(bonus))) {
+      setError("Bonus balls must be valid numbers or left blank.");
+      return;
+    }
     setSaving(true);
     try {
-      await api.addDrawRounds(numbers);
+      await api.addDrawRounds(numbers, parsedBonuses);
       onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save result");
@@ -45,9 +53,9 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
     <section className="card-form">
       <h2>Add New Results</h2>
       <p className="muted">
-        Enter both rounds of six main numbers. They are stored as independent
-        rounds under the same draw number, then statistics, learning, and
-        backtesting are recomputed using both rounds.
+        Enter both rounds of six main numbers and an optional bonus ball. They
+        are stored as independent rounds under the same draw number, then
+        statistics, learning, and backtesting are recomputed.
       </p>
       <div className="rounds-input">
         {rounds.map((round, roundIndex) => (
@@ -68,6 +76,21 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
                   }
                 />
               ))}
+              <input
+                type="number"
+                min={1}
+                max={59}
+                value={bonuses[roundIndex]}
+                aria-label={`Round ${roundIndex + 1}, bonus ball`}
+                placeholder="Bonus"
+                onChange={(event) =>
+                  setBonuses((current) =>
+                    current.map((value, index) =>
+                      index === roundIndex ? event.target.value : value,
+                    ),
+                  )
+                }
+              />
             </div>
           </fieldset>
         ))}

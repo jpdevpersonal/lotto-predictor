@@ -25,7 +25,7 @@ public class RealCsvIntegrationTests
         Assert.True(path is not null, "numbers.csv not found in any parent directory");
         using var reader = new StreamReader(path!);
         return new CsvImporter().Parse(reader)
-            .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers()))
+            .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(), d.Bonus))
             .ToList();
     }
 

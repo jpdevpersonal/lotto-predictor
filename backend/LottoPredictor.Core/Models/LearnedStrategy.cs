@@ -13,6 +13,7 @@ public class LearnedStrategy
     public double PairWeight { get; set; }
     public double PenaltyWeight { get; set; }
     public double WBias { get; set; }
+    public double WBonus { get; set; }
     public int Generation { get; set; }
     public double AvgMatches { get; set; }
     public double RecencyWeightedAvg { get; set; }

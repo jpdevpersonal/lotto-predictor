@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
   BacktestingDto,
+  BestOfLinesDto,
   LearningDto,
   PredictionDto,
+  PredictionLinesDto,
   StatisticsDto,
 } from "../types";
 
@@ -40,6 +42,10 @@ export default function Dashboard({
   const [learning, setLearning] = useState<LearningDto | null>(null);
   const [error, setError] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [lines, setLines] = useState<PredictionLinesDto | null>(null);
+  const [linesLoading, setLinesLoading] = useState(false);
+  const [bestOf, setBestOf] = useState<BestOfLinesDto | null>(null);
+  const [bestLoading, setBestLoading] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +83,31 @@ export default function Dashboard({
       );
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const loadLines = async () => {
+    setLinesLoading(true);
+    setBestOf(null);
+    try {
+      setLines(await api.predictionLines(50));
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to generate lines");
+    } finally {
+      setLinesLoading(false);
+    }
+  };
+
+  const loadBestOf = async () => {
+    setBestLoading(true);
+    try {
+      setBestOf(await api.bestOfLines(50));
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to compute best-of-50");
+    } finally {
+      setBestLoading(false);
     }
   };
 
@@ -145,11 +176,74 @@ export default function Dashboard({
           <button onClick={generate} disabled={generating}>
             {generating ? "Generating…" : "Generate Prediction"}
           </button>
+          <button
+            className="secondary"
+            onClick={loadLines}
+            disabled={linesLoading}
+          >
+            {linesLoading ? "Generating…" : "Generate 50 Lines"}
+          </button>
           <button className="secondary" onClick={onAddResult}>
             Add New Result
           </button>
         </div>
       </section>
+
+      {lines && (
+        <section>
+          <div className="section-heading">
+            <div>
+              <h2>Top 50 lines</h2>
+              <p className="muted">
+                The 50 best-scoring lines from strategy{" "}
+                <strong>{lines.strategyName}</strong> after draw #
+                {lines.cutoffDrawNumber}. Playing many lines is the only
+                reliable way to raise the chance of a 3+ match (roughly 60%
+                across 50 lines vs ~2% for one). Shown on screen only — not
+                saved.
+              </p>
+            </div>
+            <button onClick={loadBestOf} disabled={bestLoading}>
+              {bestLoading ? "Computing…" : "Compute Best-of-50"}
+            </button>
+          </div>
+
+          {bestOf && (
+            <div className="best-of-card">
+              <p className="label">
+                Best-of-50 consensus{" "}
+                <strong>
+                  — the six numbers appearing most across all 50 lines
+                </strong>
+              </p>
+              <div className="balls">
+                {bestOf.numbers.map((n, i) => (
+                  <span key={n} className="ball consensus">
+                    {n}
+                    <small>{bestOf.frequencies[i]}×</small>
+                  </span>
+                ))}
+              </div>
+              <p className="muted">
+                Frequency shows how many of the {bestOf.linesConsidered} lines
+                include each number. On-screen only — not stored or evaluated.
+              </p>
+            </div>
+          )}
+
+          <div className="lines-grid">
+            {lines.lines.map((line) => (
+              <div className="line-row" key={line.rank}>
+                <span className="line-rank">#{line.rank}</span>
+                <Balls numbers={line.numbers} />
+                <span className="line-score" title="Model line score">
+                  {line.score.toFixed(3)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {prediction?.explanation && (
         <section>

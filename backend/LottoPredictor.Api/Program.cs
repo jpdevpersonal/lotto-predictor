@@ -40,6 +40,7 @@ using (var scope = app.Services.CreateScope())
             "WGap" REAL NOT NULL, "WMomentum" REAL NOT NULL,
             "PairWeight" REAL NOT NULL, "PenaltyWeight" REAL NOT NULL,
             "WBias" REAL NOT NULL DEFAULT 0,
+            "WBonus" REAL NOT NULL DEFAULT 0,
             "Generation" INTEGER NOT NULL,
             "AvgMatches" REAL NOT NULL, "RecencyWeightedAvg" REAL NOT NULL,
             "EvaluatedDraws" INTEGER NOT NULL, "CreatedUtc" TEXT NOT NULL
@@ -51,6 +52,12 @@ using (var scope = app.Services.CreateScope())
     if (!wBiasExists)
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"LearnedStrategies\" ADD COLUMN \"WBias\" REAL NOT NULL DEFAULT 0;");
+    var wBonusExists = (await db.Database.SqlQueryRaw<int>(
+            "SELECT COUNT(*) AS \"Value\" FROM pragma_table_info('LearnedStrategies') WHERE name='WBonus'")
+        .ToListAsync()).First() > 0;
+    if (!wBonusExists)
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"LearnedStrategies\" ADD COLUMN \"WBonus\" REAL NOT NULL DEFAULT 0;");
     await db.Database.ExecuteSqlRawAsync("""
         CREATE TABLE IF NOT EXISTS "StrategyPerformanceLogs" (
             "Id" INTEGER NOT NULL CONSTRAINT "PK_StrategyPerformanceLogs" PRIMARY KEY AUTOINCREMENT,
@@ -85,20 +92,27 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-// Warm the analysis cache (features + walk-forward backtest) before serving requests.
-try
+// Warm the analysis cache after Kestrel starts so readiness is not blocked by the backtest.
+app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
 {
-    var analysis = app.Services.GetRequiredService<IAnalysisService>();
-    var snapshot = await analysis.GetSnapshotAsync();
-    app.Logger.LogInformation(
-        "Analysis ready: {Draws} draws, pool 1-{Pool}, learning generation {Gen}, active strategy '{Strategy}'.",
-        snapshot.Draws.Count, snapshot.PoolSize, snapshot.LearningGeneration, snapshot.ActiveStrategy.Name);
-    app.Logger.LogInformation("Backtest verdict: {Verdict}", snapshot.Backtest.Verdict);
-}
-catch (InvalidOperationException ex)
-{
-    app.Logger.LogWarning("Analysis not available yet: {Message}", ex.Message);
-}
+    try
+    {
+        var analysis = app.Services.GetRequiredService<IAnalysisService>();
+        var snapshot = await analysis.GetSnapshotAsync(app.Lifetime.ApplicationStopping);
+        app.Logger.LogInformation(
+            "Analysis ready: {Draws} draws, pool 1-{Pool}, learning generation {Gen}, active strategy '{Strategy}'.",
+            snapshot.Draws.Count, snapshot.PoolSize, snapshot.LearningGeneration, snapshot.ActiveStrategy.Name);
+        app.Logger.LogInformation("Backtest verdict: {Verdict}", snapshot.Backtest.Verdict);
+    }
+    catch (InvalidOperationException ex)
+    {
+        app.Logger.LogWarning("Analysis not available yet: {Message}", ex.Message);
+    }
+    catch (OperationCanceledException) when (app.Lifetime.ApplicationStopping.IsCancellationRequested)
+    {
+        app.Logger.LogInformation("Analysis warm-up canceled because the application is stopping.");
+    }
+}));
 
 app.Run();
 
