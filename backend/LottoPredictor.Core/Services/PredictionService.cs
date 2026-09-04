@@ -28,6 +28,9 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
             ? PredictionEngine.GenerateEnsemble(
                 snapshot.Features, snapshot.AllStrategies, snapshot.HedgeWeights, Backtester.EnsembleName)
             : PredictionEngine.Generate(snapshot.Features, strategy);
+        var luckyStars = snapshot.LuckyStarFeatures is null
+            ? null
+            : GenerateForFeatures(snapshot, snapshot.LuckyStarFeatures).Numbers;
         var lastDraw = snapshot.Draws[^1];
 
         var prediction = new Prediction
@@ -39,6 +42,7 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
             StrategyName = strategy.Name,
         };
         prediction.SetNumbers(result.Numbers);
+        prediction.LuckyStarsCsv = luckyStars is null ? null : string.Join(",", luckyStars);
 
         await using var db = await contextFactory.CreateDbContextAsync(ct);
         db.Predictions.Add(prediction);
@@ -56,10 +60,15 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         var snapshot = await analysis.GetSnapshotAsync(ct);
         var (scores, strategy) = ActiveScores(snapshot);
         var lines = PredictionEngine.GenerateTopLines(snapshot.Features, scores, strategy, count);
+        var starLines = GenerateLuckyStarLines(snapshot, count);
         return new PredictionLinesDto(
             snapshot.ActiveStrategy.Name,
             snapshot.Draws[^1].DrawNumber,
-            lines.Select((l, i) => new PredictionLineDto(i + 1, l.Numbers, Math.Round(l.SetScore, 4))).ToList());
+            lines.Select((line, index) => new PredictionLineDto(
+                index + 1,
+                line.Numbers,
+                starLines.Count > 0 ? starLines[index % starLines.Count].Numbers : [],
+                Math.Round(line.SetScore, 4))).ToList());
     }
 
     public async Task<BestOfLinesDto> GenerateBestOfLinesAsync(int count = 50, CancellationToken ct = default)
@@ -69,23 +78,52 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         var (scores, strategy) = ActiveScores(snapshot);
         var lines = PredictionEngine.GenerateTopLines(snapshot.Features, scores, strategy, count);
         var (numbers, frequencies) = PredictionEngine.Consensus(lines, scores);
+        var starLines = GenerateLuckyStarLines(snapshot, count);
+        var starScores = snapshot.LuckyStarFeatures is null
+            ? []
+            : PredictionEngine.ScoreNumbers(snapshot.LuckyStarFeatures, strategy);
+        var (stars, starFrequencies) = starLines.Count > 0
+            ? PredictionEngine.Consensus(starLines, starScores)
+            : (Array.Empty<int>(), Array.Empty<int>());
         return new BestOfLinesDto(
-            numbers, frequencies, lines.Count,
+            numbers, frequencies, stars, starFrequencies, lines.Count,
             snapshot.ActiveStrategy.Name, snapshot.Draws[^1].DrawNumber);
+    }
+
+    private static IReadOnlyList<PredictionResult> GenerateLuckyStarLines(
+        AnalysisSnapshot snapshot, int count)
+    {
+        if (snapshot.LuckyStarFeatures is null) return [];
+        var (scores, lineStrategy) = ActiveScores(snapshot, snapshot.LuckyStarFeatures);
+        return PredictionEngine.GenerateTopLines(
+            snapshot.LuckyStarFeatures, scores, lineStrategy, count);
+    }
+
+    private static PredictionResult GenerateForFeatures(
+        AnalysisSnapshot snapshot, FeatureSet features)
+    {
+        var strategy = snapshot.ActiveStrategy;
+        return strategy.Name == Backtester.EnsembleName
+            ? PredictionEngine.GenerateEnsemble(
+                features, snapshot.AllStrategies, snapshot.HedgeWeights, Backtester.EnsembleName)
+            : PredictionEngine.Generate(features, strategy);
     }
 
     /// <summary>Score map and combination weights for the currently active strategy,
     /// handling the hedge ensemble the same way as single prediction generation.</summary>
     private static (Dictionary<int, double> Scores, ScoringStrategy Strategy) ActiveScores(
-        AnalysisSnapshot snapshot)
+        AnalysisSnapshot snapshot) => ActiveScores(snapshot, snapshot.Features);
+
+    private static (Dictionary<int, double> Scores, ScoringStrategy Strategy) ActiveScores(
+        AnalysisSnapshot snapshot, FeatureSet features)
     {
         var strategy = snapshot.ActiveStrategy;
         if (strategy.Name != Backtester.EnsembleName)
-            return (PredictionEngine.ScoreNumbers(snapshot.Features, strategy), strategy);
+            return (PredictionEngine.ScoreNumbers(features, strategy), strategy);
 
         double total = snapshot.AllStrategies.Sum(s => snapshot.HedgeWeights.GetValueOrDefault(s.Name));
         var parts = snapshot.AllStrategies
-            .Select(s => (PredictionEngine.ScoreNumbers(snapshot.Features, s),
+            .Select(s => (PredictionEngine.ScoreNumbers(features, s),
                 total > 0 ? snapshot.HedgeWeights.GetValueOrDefault(s.Name) / total : 1.0 / snapshot.AllStrategies.Count))
             .ToList();
         var blended = PredictionEngine.BlendScores(parts);
@@ -153,8 +191,11 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         f.DrawsSinceLast, Math.Round(f.AvgGap, 2), Math.Round(f.GapRatio, 3), Math.Round(score, 4));
 
     private static PredictionDto ToDto(Prediction p, IReadOnlyList<NumberExplanationDto>? explanation) => new(
-        p.Id, p.CreatedUtc, p.Numbers(), p.CutoffSequence, p.CutoffDrawNumber,
+        p.Id, p.CreatedUtc, p.Numbers(), p.LuckyStars(), p.CutoffSequence, p.CutoffDrawNumber,
         p.ModelVersion, p.StrategyName,
         p.ActualNumbersCsv?.Split(',').Select(int.Parse).ToArray(),
-        p.Matches, explanation);
+        p.Matches,
+        p.ActualLuckyStarsCsv?.Split(',').Select(int.Parse).ToArray(),
+        p.LuckyStarMatches,
+        explanation);
 }

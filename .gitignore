@@ -1,4 +1,7 @@
 lotto.db
+euromillions.db
+*.db-shm
+*.db-wal
 bin/
 obj/
 node_modules/

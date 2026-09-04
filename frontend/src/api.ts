@@ -7,10 +7,19 @@ import type {
   PredictionDto,
   PredictionLinesDto,
   StatisticsDto,
+  LotteryKey,
 } from "./types";
 
+let selectedLottery: LotteryKey = "uk-lotto";
+
+export function setApiLottery(lottery: LotteryKey) {
+  selectedLottery = lottery;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const headers = new Headers(init?.headers);
+  headers.set("X-Lottery", selectedLottery);
+  const res = await fetch(url, { ...init, headers });
   if (res.status === 404) return null as T;
   if (!res.ok) {
     let message = `Request failed (${res.status})`;
@@ -37,11 +46,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ numbers, bonus }),
     }),
-  addDrawRounds: (rounds: number[][], bonuses: (number | null)[]) =>
+  addDrawRounds: (
+    rounds: number[][],
+    bonuses: (number | null)[],
+    luckyStars: number[][] = [],
+  ) =>
     request<DrawDto[]>("/api/draws/rounds", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rounds, bonuses }),
+      body: JSON.stringify({ rounds, bonuses, luckyStars }),
     }),
   addLatestRound: (numbers: number[], bonus: number | null = null) =>
     request<DrawDto>("/api/draws/latest/round", {
@@ -49,11 +62,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ numbers, bonus }),
     }),
-  updateDraw: (id: number, numbers: number[], bonus: number | null) =>
+  updateDraw: (
+    id: number,
+    numbers: number[],
+    bonus: number | null,
+    luckyStars: number[] = [],
+  ) =>
     request<DrawDto>(`/api/draws/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ numbers, bonus }),
+      body: JSON.stringify({ numbers, bonus, luckyStars }),
     }),
   latestPrediction: () =>
     request<PredictionDto | null>("/api/predictions/latest"),

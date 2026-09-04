@@ -1,23 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { DrawDto, DrawHistoryDto } from "../types";
+import type { DrawDto, DrawHistoryDto, LotteryProfile } from "../types";
 
-const emptyNumbers = () => ["", "", "", "", "", ""];
+const emptyNumbers = (count: number) => Array<string>(count).fill("");
 
 function parseNumbers(values: string[]): number[] | null {
   const numbers = values.map((value) => parseInt(value, 10));
   return numbers.some((number) => Number.isNaN(number)) ? null : numbers;
 }
 
-export default function DrawHistory() {
+export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
   const [history, setHistory] = useState<DrawHistoryDto | null>(null);
   const [showingAll, setShowingAll] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editValues, setEditValues] = useState<string[]>(emptyNumbers());
+  const [editValues, setEditValues] = useState<string[]>(() =>
+    emptyNumbers(lottery.mainNumberCount),
+  );
   const [editBonus, setEditBonus] = useState("");
+  const [editStars, setEditStars] = useState<string[]>(() =>
+    emptyNumbers(lottery.luckyStarCount),
+  );
   const [showAddRound, setShowAddRound] = useState(false);
-  const [roundValues, setRoundValues] = useState<string[]>(emptyNumbers());
+  const [roundValues, setRoundValues] = useState<string[]>(() =>
+    emptyNumbers(lottery.mainNumberCount),
+  );
   const [roundBonus, setRoundBonus] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -43,6 +50,7 @@ export default function DrawHistory() {
     setEditingId(draw.id);
     setEditValues(draw.numbers.map(String));
     setEditBonus(draw.bonus?.toString() ?? "");
+    setEditStars(draw.luckyStars.map(String));
     setShowAddRound(false);
     setError("");
   };
@@ -50,14 +58,15 @@ export default function DrawHistory() {
   const saveEdit = async () => {
     const numbers = parseNumbers(editValues);
     if (!numbers || editingId == null) {
-      setError("Enter all six numbers before saving.");
+      setError(`Enter all ${lottery.mainNumberCount} numbers before saving.`);
       return;
     }
 
     setSaving(true);
     try {
       const bonus = editBonus.trim() === "" ? null : parseInt(editBonus, 10);
-      await api.updateDraw(editingId, numbers, bonus);
+      const stars = editStars.map((value) => parseInt(value, 10));
+      await api.updateDraw(editingId, numbers, bonus, stars);
       setEditingId(null);
       await load(showingAll);
     } catch (saveError) {
@@ -74,7 +83,7 @@ export default function DrawHistory() {
   const addMissingRound = async () => {
     const numbers = parseNumbers(roundValues);
     if (!numbers) {
-      setError("Enter all six numbers before adding the round.");
+      setError(`Enter all ${lottery.mainNumberCount} numbers before adding the round.`);
       return;
     }
 
@@ -82,7 +91,7 @@ export default function DrawHistory() {
     try {
       const bonus = roundBonus.trim() === "" ? null : parseInt(roundBonus, 10);
       await api.addLatestRound(numbers, bonus);
-      setRoundValues(emptyNumbers());
+      setRoundValues(emptyNumbers(lottery.mainNumberCount));
       setRoundBonus("");
       setShowAddRound(false);
       await load(showingAll);
@@ -110,7 +119,7 @@ export default function DrawHistory() {
   const latestRoundCount = history?.items.filter(
     (draw) => draw.drawNumber === latestDrawNumber,
   ).length;
-  const canAddLatestRound = latestRoundCount === 1;
+  const canAddLatestRound = lottery.roundCount > 1 && latestRoundCount === 1;
 
   const loadAll = async () => {
     setLoadingAll(true);
@@ -128,7 +137,8 @@ export default function DrawHistory() {
         <div>
           <h2>Draw History</h2>
           <p className="muted">
-            Review every stored round and correct its six numbers or bonus ball.
+            Review every stored {lottery.name} draw and correct its numbers
+            {lottery.luckyStarCount > 0 ? " or Lucky Stars" : " or bonus ball"}.
           </p>
         </div>
         {canAddLatestRound && (
@@ -154,7 +164,7 @@ export default function DrawHistory() {
                 key={index}
                 type="number"
                 min={1}
-                max={59}
+                max={lottery.mainPoolSize}
                 value={value}
                 aria-label={`New round number ${index + 1}`}
                 onChange={(event) =>
@@ -206,7 +216,7 @@ export default function DrawHistory() {
                   <th>Date</th>
                   <th>Round</th>
                   <th>Numbers</th>
-                  <th>Bonus</th>
+                  <th>{lottery.luckyStarCount > 0 ? "Lucky Stars" : "Bonus"}</th>
                   <th>Source</th>
                   <th>Action</th>
                 </tr>
@@ -227,7 +237,7 @@ export default function DrawHistory() {
                                 key={index}
                                 type="number"
                                 min={1}
-                                max={59}
+                                max={lottery.mainPoolSize}
                                 value={value}
                                 aria-label={`Draw ${draw.drawNumber}, number ${index + 1}`}
                                 onChange={(event) =>
@@ -248,11 +258,33 @@ export default function DrawHistory() {
                         )}
                       </td>
                       <td>
-                        {isEditing ? (
+                        {isEditing && lottery.luckyStarCount > 0 ? (
+                          <div className="compact-number-inputs">
+                            {editStars.map((value, index) => (
+                              <input
+                                className="star-input"
+                                key={index}
+                                type="number"
+                                min={1}
+                                max={lottery.luckyStarPoolSize}
+                                value={value}
+                                aria-label={`Draw ${draw.drawNumber}, Lucky Star ${index + 1}`}
+                                onChange={(event) =>
+                                  setNumberValue(
+                                    editStars,
+                                    setEditStars,
+                                    index,
+                                    event.target.value,
+                                  )
+                                }
+                              />
+                            ))}
+                          </div>
+                        ) : isEditing ? (
                           <input
                             type="number"
                             min={1}
-                            max={59}
+                            max={lottery.mainPoolSize}
                             value={editBonus}
                             aria-label={`Draw ${draw.drawNumber}, bonus ball`}
                             placeholder="Bonus"
@@ -261,7 +293,9 @@ export default function DrawHistory() {
                             }
                           />
                         ) : (
-                          (draw.bonus ?? "—")
+                          (lottery.luckyStarCount > 0
+                            ? draw.luckyStars.join("  ")
+                            : (draw.bonus ?? "—"))
                         )}
                       </td>
                       <td>{draw.source}</td>

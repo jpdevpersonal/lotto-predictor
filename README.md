@@ -1,6 +1,6 @@
 # Lotto Predictor
 
-A small local web application that stores historical six-number draws, computes statistical
+A local web application for UK National Lottery and EuroMillions draw histories. It computes statistical
 features, runs walk-forward backtesting over hand-written and machine-learned scoring strategies,
 and generates a ranked prediction from the best currently-validated strategy. The engine **learns**:
 each new draw triggers a genetic-optimizer generation and an online hedge ensemble re-weighting —
@@ -15,7 +15,7 @@ Both services:
 ./run.sh                              # UI: http://localhost:5173
 ```
 
-Backend (imports `numbers.csv` on first run, creates `lotto.db`):
+Backend (imports both histories on first run and creates separate SQLite databases):
 
 ```bash
 cd backend/LottoPredictor.Api
@@ -51,6 +51,16 @@ dotnet test
   otherwise their frequencies would be systematically understated. New results are validated
   against the current pool (1–59).
 - `BN` is a bonus ball and is excluded from the N1–N6 prediction dataset as specified.
+
+## EuroMillions
+
+- The supplied history contains 1,977 draws from 13 February 2004 through 1 September 2026.
+- EuroMillions is stored separately in `backend/LottoPredictor.Api/euromillions.db`.
+- The engine analyzes and predicts five main numbers from 1–50 and two Lucky Stars from 1–12 as
+  separate number pools. EuroMillions has one round per draw.
+- Use the **Lottery** selector in the app header to switch games. API clients can select the same
+  database by sending `X-Lottery: euromillions`; omitting the header selects UK Lotto.
+- Override the import file with `--EuroMillionsCsvImportPath=/path/to/euromillions.csv`.
 
 ## How prediction works
 
@@ -92,7 +102,7 @@ dotnet test
 - **Performance registry**: every rebuild logs each strategy's results to
   `StrategyPerformanceLogs`, so improvement (or the honest lack of it) is auditable over time.
 
-The add-result screen accepts two rounds of six numbers in one submission. They are validated and
+For UK Lotto, the add-result screen accepts two rounds of six numbers in one submission. They are validated and
 stored atomically as consecutive draw events with the same draw number and date. Both rounds feed
 the statistics, optimizer, and future backtests. A prediction targets one chronological draw event,
 so an outstanding prediction is evaluated against round 1; generate a new prediction after saving
@@ -104,6 +114,9 @@ invalidates the cached analysis and recalculates predictions that were evaluated
 round. If the newest draw has only one round, the view also offers **Add Missing Round**. Missing
 rounds cannot be inserted into older draw groups because doing so would rewrite the chronological
 training data seen by already-stored predictions and invalidate their audit trail.
+
+For EuroMillions, add and edit screens accept one five-number round and two distinct Lucky Stars.
+Saved predictions and candidate lines include both the main-number and Lucky Star recommendations.
 
 ## API
 
@@ -123,6 +136,8 @@ training data seen by already-stored predictions and invalidate their audit trai
 | `GET /api/backtesting` | Walk-forward results, random baseline, verdict |
 | `GET /api/learning` | Learning generation, learned strategies, hedge weights, uniformity test, performance history |
 
+All endpoints accept `X-Lottery: uk-lotto` or `X-Lottery: euromillions`.
+
 ## Structure
 
 - `backend/LottoPredictor.Core` — models, EF Core `LottoDbContext` (SQLite; swappable for SQL
@@ -130,7 +145,7 @@ training data seen by already-stored predictions and invalidate their audit trai
   calculator, prediction engine, backtester, genetic optimizer, statistical functions), services,
   DTOs.
 - `backend/LottoPredictor.Api` — thin controllers + startup seeding and schema upgrades.
-- `backend/LottoPredictor.Tests` — 65 xUnit tests including real-CSV integration tests,
+- `backend/LottoPredictor.Tests` — 70 xUnit tests including real-CSV integration tests,
   future-data-leakage proofs, bias-detection and hedge-convergence tests.
-- `frontend` — React + TypeScript (Vite): dashboard, two-round add-result, and paginated draw
-  history with inline corrections and latest-round completion.
+- `frontend` — React + TypeScript (Vite): lottery selector, adaptive dashboard and result entry,
+  and paginated draw history with inline corrections.

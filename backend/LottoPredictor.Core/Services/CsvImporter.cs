@@ -10,6 +10,11 @@ public interface ICsvImporter
     List<Draw> Parse(TextReader reader);
 }
 
+public interface IEuroMillionsCsvImporter
+{
+    List<Draw> Parse(TextReader reader);
+}
+
 /// <summary>Parses the supplied numbers.csv.
 ///
 /// Notes discovered by inspecting the file:
@@ -77,6 +82,68 @@ public class CsvImporter : ICsvImporter
             .ThenByDescending(r => r.FileIndex)
             .Select(r => r.Draw)
             .ToList();
+        for (int i = 0; i < ordered.Count; i++) ordered[i].Sequence = i + 1;
+        return ordered;
+    }
+}
+
+public class EuroMillionsCsvImporter : IEuroMillionsCsvImporter
+{
+    public List<Draw> Parse(TextReader reader)
+    {
+        string? headerLine = reader.ReadLine()
+            ?? throw new InvalidDataException("CSV file is empty.");
+        var headers = headerLine.Split(',').Select(header => header.Trim()).ToArray();
+        var index = headers
+            .Select((header, position) => (header, position))
+            .ToDictionary(item => item.header, item => item.position, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var required in new[]
+                 {
+                     "draw_date", "draw_id", "N1", "N2", "N3", "N4", "N5",
+                     "lucky_star_1", "lucky_star_2",
+                 })
+        {
+            if (!index.ContainsKey(required))
+                throw new InvalidDataException($"CSV is missing required column '{required}'.");
+        }
+
+        var draws = new List<Draw>();
+        string? line;
+        int rowNumber = 1;
+        while ((line = reader.ReadLine()) != null)
+        {
+            rowNumber++;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            var fields = line.Split(',');
+            if (fields.Length < headers.Length)
+                throw new InvalidDataException($"CSV row {rowNumber} has {fields.Length} fields, expected {headers.Length}.");
+
+            string Get(string column) => fields[index[column]].Trim();
+            int GetInt(string column) => int.Parse(Get(column), CultureInfo.InvariantCulture);
+
+            var numbers = new[] { GetInt("N1"), GetInt("N2"), GetInt("N3"), GetInt("N4"), GetInt("N5") };
+            var stars = new[] { GetInt("lucky_star_1"), GetInt("lucky_star_2") };
+            if (numbers.Distinct().Count() != numbers.Length)
+                throw new InvalidDataException($"CSV row {rowNumber} contains duplicate main numbers.");
+            if (stars.Distinct().Count() != stars.Length)
+                throw new InvalidDataException($"CSV row {rowNumber} contains duplicate Lucky Stars.");
+
+            var draw = new Draw
+            {
+                DrawNumber = GetInt("draw_id"),
+                Date = DateOnly.ParseExact(Get("draw_date"), "dd/MM/yyyy", CultureInfo.InvariantCulture),
+                Bonus = stars.Min(),
+                Bonus2 = stars.Max(),
+                Machine = "EuroMillions",
+                Source = "csv",
+            };
+            draw.SetNumbers(numbers);
+            draws.Add(draw);
+        }
+
+        var ordered = draws.OrderBy(draw => draw.Date).ThenBy(draw => draw.DrawNumber).ToList();
         for (int i = 0; i < ordered.Count; i++) ordered[i].Sequence = i + 1;
         return ordered;
     }

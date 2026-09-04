@@ -58,6 +58,7 @@ public sealed class FeatureSet
 {
     public required PoolInfo Pool { get; init; }
     public required int DrawCount { get; init; }
+    public required int PickCount { get; init; }
 
     /// <summary>Index 0 corresponds to ball number 1.</summary>
     public required NumberFeatures[] Numbers { get; init; }
@@ -96,14 +97,16 @@ public sealed class FeatureSet
         double expected = 0;
         int era1Draws = Math.Max(0, Math.Min(era2Start, DrawCount) - eligibleFrom);
         int era2Draws = Math.Max(0, DrawCount - Math.Max(era2Start, eligibleFrom));
-        if (Pool.PoolSize > 49)
+        double pairNumerator = PickCount * (PickCount - 1.0);
+        if (Pool.PoolSize > 49 && PickCount == 6)
         {
-            expected += era1Draws * 30.0 / (49.0 * 48.0);
-            expected += era2Draws * 30.0 / (Pool.PoolSize * (Pool.PoolSize - 1.0));
+            expected += era1Draws * pairNumerator / (49.0 * 48.0);
+            expected += era2Draws * pairNumerator / (Pool.PoolSize * (Pool.PoolSize - 1.0));
         }
         else
         {
-            expected = (era1Draws + era2Draws) * 30.0 / (Pool.PoolSize * Math.Max(1.0, Pool.PoolSize - 1.0));
+            expected = (era1Draws + era2Draws) * pairNumerator /
+                (Pool.PoolSize * Math.Max(1.0, Pool.PoolSize - 1.0));
         }
         return expected;
     }

@@ -54,6 +54,34 @@ body {
   gap: 1rem;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.lottery-switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.lottery-switcher select {
+  min-height: 2.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.35rem 0.55rem;
+  font: inherit;
+  text-transform: none;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -205,6 +233,13 @@ section {
   flex-wrap: wrap;
 }
 
+.prediction-result {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+
 .latest-rounds {
   display: grid;
   gap: 0.75rem;
@@ -250,6 +285,19 @@ section {
   box-shadow:
     0 2px 5px rgba(30, 138, 76, 0.35),
     inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.ball.star {
+  background: linear-gradient(155deg, #f5ca55, #b87916);
+  color: #2b210d;
+  box-shadow:
+    0 2px 5px rgba(184, 121, 22, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+input.star-input {
+  border-color: #d4a33b;
+  background: #fffaf0;
 }
 
 .ball.consensus {

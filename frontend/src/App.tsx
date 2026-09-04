@@ -2,11 +2,16 @@ import { useState } from "react";
 import Dashboard from "./pages/Dashboard";
 import AddResult from "./pages/AddResult";
 import DrawHistory from "./pages/DrawHistory";
+import { setApiLottery } from "./api";
+import { LOTTERIES, type LotteryKey } from "./types";
 
 export default function App() {
   const [page, setPage] = useState<"dashboard" | "add" | "history">(
     "dashboard",
   );
+  const [lotteryKey, setLotteryKey] = useState<LotteryKey>("uk-lotto");
+  const lottery = LOTTERIES[lotteryKey];
+  setApiLottery(lotteryKey);
 
   return (
     <div className="app-shell">
@@ -18,7 +23,21 @@ export default function App() {
             <span className="tagline">Statistical analysis, not guesswork</span>
           </div>
         </div>
-        <nav className="nav-pill">
+        <div className="header-actions">
+          <label className="lottery-switcher">
+            <span>Lottery</span>
+            <select
+              value={lotteryKey}
+              onChange={(event) => {
+                setLotteryKey(event.target.value as LotteryKey);
+                setPage("dashboard");
+              }}
+            >
+              <option value="uk-lotto">UK National Lottery</option>
+              <option value="euromillions">EuroMillions</option>
+            </select>
+          </label>
+          <nav className="nav-pill">
           <button
             className={page === "dashboard" ? "active" : ""}
             onClick={() => setPage("dashboard")}
@@ -37,14 +56,15 @@ export default function App() {
           >
             History
           </button>
-        </nav>
+          </nav>
+        </div>
       </header>
       {page === "dashboard" ? (
-        <Dashboard onAddResult={() => setPage("add")} />
+        <Dashboard key={lotteryKey} lottery={lottery} onAddResult={() => setPage("add")} />
       ) : page === "history" ? (
-        <DrawHistory />
+        <DrawHistory key={lotteryKey} lottery={lottery} />
       ) : (
-        <AddResult onDone={() => setPage("dashboard")} />
+        <AddResult key={lotteryKey} lottery={lottery} onDone={() => setPage("dashboard")} />
       )}
     </div>
   );

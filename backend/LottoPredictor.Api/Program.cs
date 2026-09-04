@@ -1,19 +1,22 @@
+using LottoPredictor.Api;
 using LottoPredictor.Core.Data;
 using LottoPredictor.Core.Services;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var dbPath = Path.Combine(builder.Environment.ContentRootPath, "lotto.db");
-builder.Services.AddDbContextFactory<LottoDbContext>(o => o.UseSqlite($"Data Source={dbPath}"));
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ILotterySelection, HttpLotterySelection>();
+builder.Services.AddScoped<IDbContextFactory<LottoDbContext>, LotteryDbContextFactory>();
 
 builder.Services.AddSingleton(new AnalysisOptions());
 builder.Services.AddSingleton<ICsvImporter, CsvImporter>();
-builder.Services.AddSingleton<IAnalysisService, AnalysisService>();
-builder.Services.AddSingleton<IDrawService, DrawService>();
-builder.Services.AddSingleton<IPredictionService, PredictionService>();
-builder.Services.AddSingleton<IStatisticsService, StatisticsService>();
-builder.Services.AddSingleton<ILearningService, LearningService>();
+builder.Services.AddSingleton<IEuroMillionsCsvImporter, EuroMillionsCsvImporter>();
+builder.Services.AddScoped<IAnalysisService, AnalysisService>();
+builder.Services.AddScoped<IDrawService, DrawService>();
+builder.Services.AddScoped<IPredictionService, PredictionService>();
+builder.Services.AddScoped<IStatisticsService, StatisticsService>();
+builder.Services.AddScoped<ILearningService, LearningService>();
 
 builder.Services.AddControllers();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
@@ -27,12 +30,16 @@ app.MapControllers();
 // One-time seed: create schema and import the historical CSV if the database is empty.
 using (var scope = app.Services.CreateScope())
 {
-    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<LottoDbContext>>();
-    await using var db = await factory.CreateDbContextAsync();
-    await db.Database.EnsureCreatedAsync();
+    foreach (var lottery in new[] { LotteryProfile.UkLotto, LotteryProfile.EuroMillions })
+    {
+        var options = new DbContextOptionsBuilder<LottoDbContext>()
+            .UseSqlite($"Data Source={LotteryDbContextFactory.DatabasePath(builder.Environment.ContentRootPath, lottery)}")
+            .Options;
+        await using var db = new LottoDbContext(options);
+        await db.Database.EnsureCreatedAsync();
 
-    // EnsureCreated does nothing on a pre-existing database, so add the learning tables manually.
-    await db.Database.ExecuteSqlRawAsync("""
+        // EnsureCreated does nothing on a pre-existing database, so add newer tables manually.
+        await db.Database.ExecuteSqlRawAsync("""
         CREATE TABLE IF NOT EXISTS "LearnedStrategies" (
             "Id" INTEGER NOT NULL CONSTRAINT "PK_LearnedStrategies" PRIMARY KEY AUTOINCREMENT,
             "Name" TEXT NOT NULL,
@@ -46,19 +53,19 @@ using (var scope = app.Services.CreateScope())
             "EvaluatedDraws" INTEGER NOT NULL, "CreatedUtc" TEXT NOT NULL
         );
         """);
-    var wBiasExists = (await db.Database.SqlQueryRaw<int>(
+        var wBiasExists = (await db.Database.SqlQueryRaw<int>(
             "SELECT COUNT(*) AS \"Value\" FROM pragma_table_info('LearnedStrategies') WHERE name='WBias'")
-        .ToListAsync()).First() > 0;
-    if (!wBiasExists)
-        await db.Database.ExecuteSqlRawAsync(
-            "ALTER TABLE \"LearnedStrategies\" ADD COLUMN \"WBias\" REAL NOT NULL DEFAULT 0;");
-    var wBonusExists = (await db.Database.SqlQueryRaw<int>(
+            .ToListAsync()).First() > 0;
+        if (!wBiasExists)
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"LearnedStrategies\" ADD COLUMN \"WBias\" REAL NOT NULL DEFAULT 0;");
+        var wBonusExists = (await db.Database.SqlQueryRaw<int>(
             "SELECT COUNT(*) AS \"Value\" FROM pragma_table_info('LearnedStrategies') WHERE name='WBonus'")
-        .ToListAsync()).First() > 0;
-    if (!wBonusExists)
-        await db.Database.ExecuteSqlRawAsync(
-            "ALTER TABLE \"LearnedStrategies\" ADD COLUMN \"WBonus\" REAL NOT NULL DEFAULT 0;");
-    await db.Database.ExecuteSqlRawAsync("""
+            .ToListAsync()).First() > 0;
+        if (!wBonusExists)
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"LearnedStrategies\" ADD COLUMN \"WBonus\" REAL NOT NULL DEFAULT 0;");
+        await db.Database.ExecuteSqlRawAsync("""
         CREATE TABLE IF NOT EXISTS "StrategyPerformanceLogs" (
             "Id" INTEGER NOT NULL CONSTRAINT "PK_StrategyPerformanceLogs" PRIMARY KEY AUTOINCREMENT,
             "LoggedUtc" TEXT NOT NULL,
@@ -68,26 +75,51 @@ using (var scope = app.Services.CreateScope())
             "RandomExpected" REAL NOT NULL, "WasActive" INTEGER NOT NULL
         );
         """);
-    await db.Database.ExecuteSqlRawAsync(
-        "CREATE INDEX IF NOT EXISTS \"IX_StrategyPerformanceLogs_DrawCount\" ON \"StrategyPerformanceLogs\" (\"DrawCount\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_StrategyPerformanceLogs_DrawCount\" ON \"StrategyPerformanceLogs\" (\"DrawCount\");");
 
-    if (!await db.Draws.AnyAsync())
-    {
-        var csvPath = app.Configuration["CsvImportPath"]
-            ?? Path.Combine(builder.Environment.ContentRootPath, "..", "..", "numbers.csv");
-        csvPath = Path.GetFullPath(csvPath);
-        if (File.Exists(csvPath))
+    #pragma warning disable EF1002 // Values below are compile-time schema identifiers, never request data.
+        foreach (var (table, column, definition) in new[]
+                 {
+                     ("Draws", "Bonus2", "INTEGER NULL"),
+                     ("Predictions", "LuckyStarsCsv", "TEXT NULL"),
+                     ("Predictions", "ActualLuckyStarsCsv", "TEXT NULL"),
+                     ("Predictions", "LuckyStarMatches", "INTEGER NULL"),
+                 })
         {
-            var importer = scope.ServiceProvider.GetRequiredService<ICsvImporter>();
-            using var reader = new StreamReader(csvPath);
-            var draws = importer.Parse(reader);
-            db.Draws.AddRange(draws);
-            await db.SaveChangesAsync();
-            app.Logger.LogInformation("Imported {Count} draws from {Path}", draws.Count, csvPath);
+            bool exists = (await db.Database.SqlQueryRaw<int>(
+                    $"SELECT COUNT(*) AS \"Value\" FROM pragma_table_info('{table}') WHERE name='{column}'")
+                .ToListAsync()).First() > 0;
+            if (!exists)
+                await db.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {definition};");
         }
-        else
+#pragma warning restore EF1002
+
+        if (!await db.Draws.AnyAsync())
         {
-            app.Logger.LogWarning("CSV not found at {Path}; database is empty.", csvPath);
+            string csvPath = lottery == LotteryProfile.EuroMillions
+                ? app.Configuration["EuroMillionsCsvImportPath"]
+                    ?? "/mnt/c/Users/Admin/Desktop/euromillions_draw_history_2004_to_2026-09-01.csv"
+                : app.Configuration["CsvImportPath"]
+                    ?? Path.Combine(builder.Environment.ContentRootPath, "..", "..", "numbers.csv");
+            csvPath = Path.GetFullPath(csvPath);
+            if (File.Exists(csvPath))
+            {
+                using var reader = new StreamReader(csvPath);
+                var draws = lottery == LotteryProfile.EuroMillions
+                    ? scope.ServiceProvider.GetRequiredService<IEuroMillionsCsvImporter>().Parse(reader)
+                    : scope.ServiceProvider.GetRequiredService<ICsvImporter>().Parse(reader);
+                db.Draws.AddRange(draws);
+                await db.SaveChangesAsync();
+                app.Logger.LogInformation(
+                    "Imported {Count} {Lottery} draws from {Path}", draws.Count, lottery.Name, csvPath);
+            }
+            else
+            {
+                app.Logger.LogWarning(
+                    "{Lottery} CSV not found at {Path}; database is empty.", lottery.Name, csvPath);
+            }
         }
     }
 }
@@ -97,7 +129,8 @@ app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
 {
     try
     {
-        var analysis = app.Services.GetRequiredService<IAnalysisService>();
+        using var scope = app.Services.CreateScope();
+        var analysis = scope.ServiceProvider.GetRequiredService<IAnalysisService>();
         var snapshot = await analysis.GetSnapshotAsync(app.Lifetime.ApplicationStopping);
         app.Logger.LogInformation(
             "Analysis ready: {Draws} draws, pool 1-{Pool}, learning generation {Gen}, active strategy '{Strategy}'.",

@@ -81,3 +81,27 @@ public class CsvImporterTests
         Assert.Equal(new[] { 3, 5, 14, 22, 30, 44 }, draws[0].Numbers());
     }
 }
+
+public class EuroMillionsCsvImporterTests
+{
+    [Fact]
+    public void Parses_attached_format_with_five_numbers_and_two_lucky_stars()
+    {
+        const string csv = """
+            draw_date,draw_id,N1,N2,N3,N4,N5,lucky_star_1,lucky_star_2
+            20/02/2004,22004,7,13,39,47,50,2,5
+            13/02/2004,12004,16,29,32,36,41,7,9
+            """;
+        var importer = new EuroMillionsCsvImporter();
+        using var reader = new StringReader(csv);
+
+        var draws = importer.Parse(reader);
+
+        Assert.Equal(2, draws.Count);
+        Assert.Equal([1, 2], draws.Select(draw => draw.Sequence));
+        Assert.Equal(new DateOnly(2004, 2, 13), draws[0].Date);
+        Assert.Equal([16, 29, 32, 36, 41], draws[0].Numbers());
+        Assert.Equal([7, 9], draws[0].BonusNumbers());
+        Assert.Null(draws[0].N6);
+    }
+}

@@ -1,14 +1,29 @@
 import { useState } from "react";
 import { api } from "../api";
+import type { LotteryProfile } from "../types";
 
-const emptyRound = () => ["", "", "", "", "", ""];
+const emptyValues = (count: number) => Array<string>(count).fill("");
 
-export default function AddResult({ onDone }: { onDone: () => void }) {
-  const [rounds, setRounds] = useState<string[][]>([
-    emptyRound(),
-    emptyRound(),
-  ]);
-  const [bonuses, setBonuses] = useState(["", ""]);
+export default function AddResult({
+  lottery,
+  onDone,
+}: {
+  lottery: LotteryProfile;
+  onDone: () => void;
+}) {
+  const [rounds, setRounds] = useState<string[][]>(() =>
+    Array.from({ length: lottery.roundCount }, () =>
+      emptyValues(lottery.mainNumberCount),
+    ),
+  );
+  const [bonuses, setBonuses] = useState(() =>
+    emptyValues(lottery.roundCount),
+  );
+  const [luckyStars, setLuckyStars] = useState<string[][]>(() =>
+    Array.from({ length: lottery.roundCount }, () =>
+      emptyValues(lottery.luckyStarCount),
+    ),
+  );
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -28,7 +43,9 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
       round.map((value) => parseInt(value, 10)),
     );
     if (numbers.some((round) => round.some((number) => Number.isNaN(number)))) {
-      setError("Please enter all six numbers in both rounds.");
+      setError(
+        `Please enter all ${lottery.mainNumberCount} numbers in every round.`,
+      );
       return;
     }
     const parsedBonuses = bonuses.map((value) =>
@@ -38,9 +55,20 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
       setError("Bonus balls must be valid numbers or left blank.");
       return;
     }
+    const parsedStars = luckyStars.map((round) =>
+      round.map((value) => parseInt(value, 10)),
+    );
+    if (
+      parsedStars.some((round) =>
+        round.some((number) => Number.isNaN(number)),
+      )
+    ) {
+      setError("Please enter both Lucky Stars.");
+      return;
+    }
     setSaving(true);
     try {
-      await api.addDrawRounds(numbers, parsedBonuses);
+      await api.addDrawRounds(numbers, parsedBonuses, parsedStars);
       onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save result");
@@ -53,9 +81,9 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
     <section className="card-form">
       <h2>Add New Results</h2>
       <p className="muted">
-        Enter both rounds of six main numbers and an optional bonus ball. They
-        are stored as independent rounds under the same draw number, then
-        statistics, learning, and backtesting are recomputed.
+        Enter {lottery.roundCount === 1 ? "the" : "both"} {lottery.name} round
+        {lottery.roundCount === 1 ? "" : "s"}. Statistics, learning, and
+        backtesting are recomputed after saving.
       </p>
       <div className="rounds-input">
         {rounds.map((round, roundIndex) => (
@@ -67,7 +95,7 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
                   key={numberIndex}
                   type="number"
                   min={1}
-                  max={59}
+                  max={lottery.mainPoolSize}
                   value={value}
                   aria-label={`Round ${roundIndex + 1}, number ${numberIndex + 1}`}
                   placeholder={`N${numberIndex + 1}`}
@@ -76,21 +104,49 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
                   }
                 />
               ))}
-              <input
-                type="number"
-                min={1}
-                max={59}
-                value={bonuses[roundIndex]}
-                aria-label={`Round ${roundIndex + 1}, bonus ball`}
-                placeholder="Bonus"
-                onChange={(event) =>
-                  setBonuses((current) =>
-                    current.map((value, index) =>
-                      index === roundIndex ? event.target.value : value,
-                    ),
-                  )
-                }
-              />
+              {lottery.luckyStarCount > 0
+                ? luckyStars[roundIndex].map((value, starIndex) => (
+                    <input
+                      className="star-input"
+                      key={`star-${starIndex}`}
+                      type="number"
+                      min={1}
+                      max={lottery.luckyStarPoolSize}
+                      value={value}
+                      aria-label={`Lucky Star ${starIndex + 1}`}
+                      placeholder={`Star ${starIndex + 1}`}
+                      onChange={(event) =>
+                        setLuckyStars((current) =>
+                          current.map((stars, index) =>
+                            index === roundIndex
+                              ? stars.map((star, position) =>
+                                  position === starIndex
+                                    ? event.target.value
+                                    : star,
+                                )
+                              : stars,
+                          ),
+                        )
+                      }
+                    />
+                  ))
+                : (
+                    <input
+                      type="number"
+                      min={1}
+                      max={lottery.mainPoolSize}
+                      value={bonuses[roundIndex]}
+                      aria-label={`Round ${roundIndex + 1}, bonus ball`}
+                      placeholder="Bonus"
+                      onChange={(event) =>
+                        setBonuses((current) =>
+                          current.map((value, index) =>
+                            index === roundIndex ? event.target.value : value,
+                          ),
+                        )
+                      }
+                    />
+                  )}
             </div>
           </fieldset>
         ))}
@@ -98,7 +154,7 @@ export default function AddResult({ onDone }: { onDone: () => void }) {
       {error && <p className="error">{error}</p>}
       <div className="actions">
         <button onClick={save} disabled={saving}>
-          {saving ? "Saving…" : "Save Both Rounds"}
+          {saving ? "Saving…" : `Save ${lottery.roundCount === 1 ? "Result" : "Both Rounds"}`}
         </button>
         <button className="secondary" onClick={onDone} disabled={saving}>
           Cancel
