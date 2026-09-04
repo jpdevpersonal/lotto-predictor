@@ -6,13 +6,13 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<ILotterySelection, HttpLotterySelection>();
-builder.Services.AddScoped<IDbContextFactory<LottoDbContext>, LotteryDbContextFactory>();
+builder.Services.AddSingleton<ILotterySelection, HttpLotterySelection>();
+builder.Services.AddSingleton<IDbContextFactory<LottoDbContext>, LotteryDbContextFactory>();
 
 builder.Services.AddSingleton(new AnalysisOptions());
 builder.Services.AddSingleton<ICsvImporter, CsvImporter>();
 builder.Services.AddSingleton<IEuroMillionsCsvImporter, EuroMillionsCsvImporter>();
-builder.Services.AddScoped<IAnalysisService, AnalysisService>();
+builder.Services.AddSingleton<IAnalysisService, AnalysisService>();
 builder.Services.AddScoped<IDrawService, DrawService>();
 builder.Services.AddScoped<IPredictionService, PredictionService>();
 builder.Services.AddScoped<IStatisticsService, StatisticsService>();
