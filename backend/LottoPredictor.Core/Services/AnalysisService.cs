@@ -2,6 +2,7 @@ using LottoPredictor.Core.Analysis;
 using LottoPredictor.Core.Data;
 using LottoPredictor.Core.Models;
 using Microsoft.EntityFrameworkCore;
+using System.Collections.Concurrent;
 
 namespace LottoPredictor.Core.Services;
 
@@ -38,11 +39,16 @@ public class AnalysisOptions
 /// average matches on the current dataset.</summary>
 public class AnalysisService : IAnalysisService
 {
+    private sealed class ProfileAnalysisState
+    {
+        public SemaphoreSlim Lock { get; } = new(1, 1);
+        public AnalysisSnapshot? Snapshot { get; set; }
+    }
+
     private readonly IDbContextFactory<LottoDbContext> contextFactory;
     private readonly AnalysisOptions options;
     private readonly ILotterySelection lotterySelection;
-    private readonly SemaphoreSlim _lock = new(1, 1);
-    private AnalysisSnapshot? _snapshot;
+    private readonly ConcurrentDictionary<string, ProfileAnalysisState> profileStates = new();
 
     public AnalysisService(
         IDbContextFactory<LottoDbContext> contextFactory,
@@ -56,13 +62,15 @@ public class AnalysisService : IAnalysisService
 
     public async Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default)
     {
-        var existing = _snapshot;
+        var lottery = lotterySelection.Current;
+        var state = profileStates.GetOrAdd(lottery.Key, _ => new ProfileAnalysisState());
+        var existing = state.Snapshot;
         if (existing != null) return existing;
 
-        await _lock.WaitAsync(ct);
+        await state.Lock.WaitAsync(ct);
         try
         {
-            if (_snapshot != null) return _snapshot;
+            if (state.Snapshot != null) return state.Snapshot;
 
             await using var db = await contextFactory.CreateDbContextAsync(ct);
             var draws = await db.Draws.AsNoTracking()
@@ -71,7 +79,6 @@ public class AnalysisService : IAnalysisService
             if (draws.Count == 0)
                 throw new InvalidOperationException("No draws in database; import the CSV first.");
 
-            var lottery = lotterySelection.Current;
             var events = draws
                 .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(),
                     lottery == LotteryProfile.UkLotto ? d.Bonus : null))
@@ -109,7 +116,7 @@ public class AnalysisService : IAnalysisService
 
             await PersistLearningAsync(db, backtest, generation, events.Count, ct);
 
-            _snapshot = new AnalysisSnapshot
+            state.Snapshot = new AnalysisSnapshot
             {
                 Draws = events,
                 Features = features,
@@ -120,11 +127,11 @@ public class AnalysisService : IAnalysisService
                 AllStrategies = allStrategies,
                 LearningGeneration = generation,
             };
-            return _snapshot;
+            return state.Snapshot;
         }
         finally
         {
-            _lock.Release();
+            state.Lock.Release();
         }
     }
 
@@ -199,5 +206,10 @@ public class AnalysisService : IAnalysisService
         await db.SaveChangesAsync(ct);
     }
 
-    public void Invalidate() => _snapshot = null;
+    public void Invalidate()
+    {
+        var lottery = lotterySelection.Current;
+        if (profileStates.TryGetValue(lottery.Key, out var state))
+            state.Snapshot = null;
+    }
 }

@@ -193,7 +193,8 @@ public class DrawService : IDrawService
             ?? throw new KeyNotFoundException($"Draw {id} was not found.");
         draw.SetNumbers(request.Numbers);
         draw.Bonus = request.Bonus;
-        draw.Bonus2 = null;
+        if (lottery == LotteryProfile.UkLotto)
+            draw.Bonus2 = null;
         SetLuckyStars(draw, request.LuckyStars);
 
         var evaluatedPredictions = await db.Predictions
