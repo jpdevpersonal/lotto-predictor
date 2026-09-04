@@ -7,15 +7,16 @@ public record DrawDto(
     string Date,
     int[] Numbers,
     int? Bonus,
+    int[] LuckyStars,
     string Machine,
     string BallSet,
     string Source);
 
-public record AddDrawRequest(int[] Numbers, int? Bonus = null);
+public record AddDrawRequest(int[] Numbers, int? Bonus = null, int[]? LuckyStars = null);
 
-public record AddDrawRoundsRequest(int[][] Rounds, int?[]? Bonuses = null);
+public record AddDrawRoundsRequest(int[][] Rounds, int?[]? Bonuses = null, int[][]? LuckyStars = null);
 
-public record UpdateDrawRequest(int[] Numbers, int? Bonus = null);
+public record UpdateDrawRequest(int[] Numbers, int? Bonus = null, int[]? LuckyStars = null);
 
 public record DrawHistoryDto(
     IReadOnlyList<DrawDto> Items,
@@ -40,15 +41,18 @@ public record PredictionDto(
     int Id,
     DateTime CreatedUtc,
     int[] Numbers,
+    int[] LuckyStars,
     int CutoffSequence,
     int CutoffDrawNumber,
     string ModelVersion,
     string StrategyName,
     int[]? ActualNumbers,
     int? Matches,
+    int[]? ActualLuckyStars,
+    int? LuckyStarMatches,
     IReadOnlyList<NumberExplanationDto>? Explanation);
 
-public record PredictionLineDto(int Rank, int[] Numbers, double Score);
+public record PredictionLineDto(int Rank, int[] Numbers, int[] LuckyStars, double Score);
 
 public record PredictionLinesDto(
     string StrategyName,
@@ -58,6 +62,8 @@ public record PredictionLinesDto(
 public record BestOfLinesDto(
     int[] Numbers,
     int[] Frequencies,
+    int[] LuckyStars,
+    int[] LuckyStarFrequencies,
     int LinesConsidered,
     string StrategyName,
     int CutoffDrawNumber);

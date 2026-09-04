@@ -1,3 +1,36 @@
+export type LotteryKey = "uk-lotto" | "euromillions";
+
+export interface LotteryProfile {
+  key: LotteryKey;
+  name: string;
+  mainNumberCount: number;
+  mainPoolSize: number;
+  luckyStarCount: number;
+  luckyStarPoolSize: number;
+  roundCount: number;
+}
+
+export const LOTTERIES: Record<LotteryKey, LotteryProfile> = {
+  "uk-lotto": {
+    key: "uk-lotto",
+    name: "UK National Lottery",
+    mainNumberCount: 6,
+    mainPoolSize: 59,
+    luckyStarCount: 0,
+    luckyStarPoolSize: 0,
+    roundCount: 2,
+  },
+  euromillions: {
+    key: "euromillions",
+    name: "EuroMillions",
+    mainNumberCount: 5,
+    mainPoolSize: 50,
+    luckyStarCount: 2,
+    luckyStarPoolSize: 12,
+    roundCount: 1,
+  },
+};
+
 export interface DrawDto {
   id: number;
   sequence: number;
@@ -5,6 +38,7 @@ export interface DrawDto {
   date: string;
   numbers: number[];
   bonus: number | null;
+  luckyStars: number[];
   machine: string;
   ballSet: string;
   source: string;
@@ -35,18 +69,22 @@ export interface PredictionDto {
   id: number;
   createdUtc: string;
   numbers: number[];
+  luckyStars: number[];
   cutoffSequence: number;
   cutoffDrawNumber: number;
   modelVersion: string;
   strategyName: string;
   actualNumbers: number[] | null;
   matches: number | null;
+  actualLuckyStars: number[] | null;
+  luckyStarMatches: number | null;
   explanation: NumberExplanationDto[] | null;
 }
 
 export interface PredictionLineDto {
   rank: number;
   numbers: number[];
+  luckyStars: number[];
   score: number;
 }
 
@@ -59,6 +97,8 @@ export interface PredictionLinesDto {
 export interface BestOfLinesDto {
   numbers: number[];
   frequencies: number[];
+  luckyStars: number[];
+  luckyStarFrequencies: number[];
   linesConsidered: number;
   strategyName: string;
   cutoffDrawNumber: number;

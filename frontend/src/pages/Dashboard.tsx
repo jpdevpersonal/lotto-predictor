@@ -7,21 +7,24 @@ import type {
   PredictionDto,
   PredictionLinesDto,
   StatisticsDto,
+  LotteryProfile,
 } from "../types";
 
 function Balls({
   numbers,
   matched,
+  stars = false,
 }: {
   numbers: number[];
   matched?: number[];
+  stars?: boolean;
 }) {
   return (
     <div className="balls">
       {numbers.map((n) => (
         <span
           key={n}
-          className={`ball${matched?.includes(n) ? " matched" : ""}`}
+          className={`ball${stars ? " star" : ""}${matched?.includes(n) ? " matched" : ""}`}
         >
           {n}
         </span>
@@ -31,8 +34,10 @@ function Balls({
 }
 
 export default function Dashboard({
+  lottery,
   onAddResult,
 }: {
+  lottery: LotteryProfile;
   onAddResult: () => void;
 }) {
   const [stats, setStats] = useState<StatisticsDto | null>(null);
@@ -124,7 +129,7 @@ export default function Dashboard({
               <div className="stat-value">{stats.drawCount}</div>
               <div className="stat-label">Historical draws</div>
               <div className="stat-sub">
-                numbers 1–{stats.poolSize}
+                {lottery.name} · numbers 1–{stats.poolSize}
                 {stats.poolChangeDrawNumber != null &&
                   `, enlarged from 1–49 at draw ${stats.poolChangeDrawNumber}`}
               </div>
@@ -147,6 +152,9 @@ export default function Dashboard({
               <div className="latest-round" key={round.id}>
                 <span className="round-label">Round {index + 1}</span>
                 <Balls numbers={round.numbers} />
+                {round.luckyStars.length > 0 && (
+                  <Balls numbers={round.luckyStars} stars />
+                )}
               </div>
             ))}
           </div>
@@ -167,7 +175,12 @@ export default function Dashboard({
           )}
         </p>
         {prediction ? (
-          <Balls numbers={prediction.numbers} />
+          <div className="prediction-result">
+            <Balls numbers={prediction.numbers} />
+            {prediction.luckyStars.length > 0 && (
+              <Balls numbers={prediction.luckyStars} stars />
+            )}
+          </div>
         ) : (
           <p className="muted">none yet</p>
         )}
@@ -213,7 +226,8 @@ export default function Dashboard({
               <p className="label">
                 Best-of-50 consensus{" "}
                 <strong>
-                  — the six numbers appearing most across all 50 lines
+                  — the {lottery.mainNumberCount} numbers appearing most across
+                  all 50 lines
                 </strong>
               </p>
               <div className="balls">
@@ -224,6 +238,16 @@ export default function Dashboard({
                   </span>
                 ))}
               </div>
+              {bestOf.luckyStars.length > 0 && (
+                <div className="balls">
+                  {bestOf.luckyStars.map((number, index) => (
+                    <span key={number} className="ball star consensus">
+                      {number}
+                      <small>{bestOf.luckyStarFrequencies[index]}×</small>
+                    </span>
+                  ))}
+                </div>
+              )}
               <p className="muted">
                 Frequency shows how many of the {bestOf.linesConsidered} lines
                 include each number. On-screen only — not stored or evaluated.
@@ -236,6 +260,9 @@ export default function Dashboard({
               <div className="line-row" key={line.rank}>
                 <span className="line-rank">#{line.rank}</span>
                 <Balls numbers={line.numbers} />
+                {line.luckyStars.length > 0 && (
+                  <Balls numbers={line.luckyStars} stars />
+                )}
                 <span className="line-score" title="Model line score">
                   {line.score.toFixed(3)}
                 </span>
@@ -482,8 +509,18 @@ export default function Dashboard({
                   <td>{p.numbers.join(" ")}</td>
                   <td>#{p.cutoffDrawNumber}</td>
                   <td>{p.modelVersion}</td>
-                  <td>{p.actualNumbers ? p.actualNumbers.join(" ") : "—"}</td>
-                  <td>{p.matches ?? "pending"}</td>
+                  <td>
+                    {p.actualNumbers ? p.actualNumbers.join(" ") : "—"}
+                    {p.actualLuckyStars?.length
+                      ? ` + ${p.actualLuckyStars.join(" ")}`
+                      : ""}
+                  </td>
+                  <td>
+                    {p.matches ?? "pending"}
+                    {p.luckyStarMatches != null
+                      ? ` + ${p.luckyStarMatches} stars`
+                      : ""}
+                  </td>
                 </tr>
               ))}
             </tbody>

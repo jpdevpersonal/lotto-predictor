@@ -12,13 +12,16 @@ public static class FeatureCalculator
         var pool = PoolInfo.Detect(draws);
         int p = pool.PoolSize;
         int n = draws.Count;
+        int pickCount = draws[0].Numbers.Length;
+        if (draws.Any(draw => draw.Numbers.Length != pickCount))
+            throw new InvalidOperationException("All draws must contain the same number of balls.");
 
         var occurrences = new List<int>[p + 1];
         var positionCounts = new int[p + 1][];
         for (int v = 1; v <= p; v++)
         {
             occurrences[v] = [];
-            positionCounts[v] = new int[6];
+            positionCounts[v] = new int[pickCount];
         }
         var pairCounts = new int[p + 1, p + 1];
         var tripleCounts = new Dictionary<(int, int, int), int>();
@@ -28,17 +31,17 @@ public static class FeatureCalculator
         {
             if (draws[i].Bonus is int bb && bb >= 1 && bb <= p) bonusCounts[bb]++;
             var nums = draws[i].Numbers;
-            for (int j = 0; j < 6; j++)
+            for (int j = 0; j < pickCount; j++)
             {
                 int v = nums[j];
                 occurrences[v].Add(i);
                 positionCounts[v][j]++;
             }
-            for (int a = 0; a < 6; a++)
-                for (int b = a + 1; b < 6; b++)
+            for (int a = 0; a < pickCount; a++)
+                for (int b = a + 1; b < pickCount; b++)
                 {
                     pairCounts[nums[a], nums[b]]++;
-                    for (int c = b + 1; c < 6; c++)
+                    for (int c = b + 1; c < pickCount; c++)
                     {
                         var key = (nums[a], nums[b], nums[c]);
                         tripleCounts.TryGetValue(key, out int t);
@@ -90,20 +93,20 @@ public static class FeatureCalculator
             int p1 = p > 49 ? 49 : p;
             int era1 = Math.Max(0, Math.Min(pool.Era2StartIndex, n) - eligibleFrom);
             int era2 = Math.Max(0, n - Math.Max(pool.Era2StartIndex, eligibleFrom));
-            double q1 = 6.0 / p1, q2 = 6.0 / p;
+            double q1 = (double)pickCount / p1, q2 = (double)pickCount / p;
             double expected = era1 * q1 + era2 * q2;
             double variance = era1 * q1 * (1 - q1) + era2 * q2 * (1 - q2);
             double biasZ = variance > 1e-9 ? (total - expected) / Math.Sqrt(variance) : 0;
 
             // Bayesian shrinkage toward the fair rate: ~20 pseudo-draws of prior evidence.
             const double shrink = 20.0;
-            double qNow = 6.0 / pool.PoolAt(n - 1);
+            double qNow = (double)pickCount / pool.PoolAt(n - 1);
             double qBar = eligible > 0 ? expected / eligible : qNow;
             double freqShrunk = (total + shrink * qBar) / (Math.Max(0, eligible) + shrink);
             double recentShrunk = (recentRate * w100 + shrink * qNow) / (w100 + shrink);
             double rate50Shrunk = (c50 + shrink * qNow) / (w50 + shrink);
 
-            double bonusPrior = 1.0 / Math.Max(1, p - 6);
+            double bonusPrior = 1.0 / Math.Max(1, p - pickCount);
             double bonusRate = (bonusCounts[v] + shrink * bonusPrior) / (Math.Max(0, eligible) + shrink);
 
             features[v - 1] = new NumberFeatures
@@ -143,10 +146,10 @@ public static class FeatureCalculator
         {
             var nums = draws[i].Numbers;
             sums.Add(nums.Sum());
-            ranges.Add(nums[5] - nums[0]);
+            ranges.Add(nums[^1] - nums[0]);
             odds.Add(nums.Count(x => x % 2 == 1));
             int cc = 0;
-            for (int j = 0; j < 5; j++) if (nums[j + 1] == nums[j] + 1) cc++;
+            for (int j = 0; j < pickCount - 1; j++) if (nums[j + 1] == nums[j] + 1) cc++;
             consecs.Add(cc);
             lows.Add(nums.Count(x => x <= half));
         }
@@ -165,7 +168,7 @@ public static class FeatureCalculator
         double chiP = 1.0;
         if (chiWindow >= 30)
         {
-            double e = chiWindow * 6.0 / p;
+            double e = chiWindow * (double)pickCount / p;
             for (int v = 1; v <= p; v++)
             {
                 int observed = CountFrom(occurrences[v], chiStart);
@@ -179,6 +182,7 @@ public static class FeatureCalculator
         {
             Pool = pool,
             DrawCount = n,
+            PickCount = pickCount,
             Numbers = features,
             PairCounts = pairCounts,
             TripleCounts = tripleCounts,

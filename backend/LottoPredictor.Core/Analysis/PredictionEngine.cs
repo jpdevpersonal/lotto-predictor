@@ -22,7 +22,7 @@ public static class PredictionEngine
     public static Dictionary<int, double> ScoreNumbers(FeatureSet fs, ScoringStrategy s)
     {
         var eligible = fs.Numbers.Where(f => f.EligibleDraws >= 10).ToArray();
-        if (eligible.Length < 6)
+        if (eligible.Length < fs.PickCount)
             eligible = fs.Numbers.Where(f => f.EligibleDraws > 0).ToArray();
 
         var zFreq = ZScores(eligible, f => f.FreqRateShrunk);
@@ -54,8 +54,9 @@ public static class PredictionEngine
     public static PredictionResult GenerateFromScores(
         FeatureSet fs, Dictionary<int, double> scores, ScoringStrategy strategy)
     {
-        if (scores.Count < 6)
-            throw new InvalidOperationException("Not enough historical data to score six numbers.");
+        int pickCount = fs.PickCount;
+        if (scores.Count < pickCount)
+            throw new InvalidOperationException($"Not enough historical data to score {pickCount} numbers.");
 
         // Deterministic ranking: score desc, then lower number first.
         var ranked = scores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
@@ -66,10 +67,10 @@ public static class PredictionEngine
         double bestScore = double.NegativeInfinity;
         double bestPenalty = 0, bestSynergy = 0;
 
-        foreach (var combo in Combinations(candidates.Length, 6))
+        foreach (var combo in Combinations(candidates.Length, pickCount))
         {
-            var set = new int[6];
-            for (int i = 0; i < 6; i++) set[i] = candidates[combo[i]];
+            var set = new int[pickCount];
+            for (int i = 0; i < pickCount; i++) set[i] = candidates[combo[i]];
             Array.Sort(set);
 
             double numberScore = set.Sum(v => scores[v]);
@@ -95,18 +96,19 @@ public static class PredictionEngine
     public static IReadOnlyList<PredictionResult> GenerateTopLines(
         FeatureSet fs, Dictionary<int, double> scores, ScoringStrategy strategy, int count)
     {
-        if (scores.Count < 6)
-            throw new InvalidOperationException("Not enough historical data to score six numbers.");
+        int pickCount = fs.PickCount;
+        if (scores.Count < pickCount)
+            throw new InvalidOperationException($"Not enough historical data to score {pickCount} numbers.");
 
         var ranked = scores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
             .Select(kv => kv.Key).ToArray();
         var candidates = ranked.Take(Math.Min(CandidatePoolSize, ranked.Length)).ToArray();
 
         var all = new List<(int[] Set, double Total, double Penalty, double Synergy)>();
-        foreach (var combo in Combinations(candidates.Length, 6))
+        foreach (var combo in Combinations(candidates.Length, pickCount))
         {
-            var set = new int[6];
-            for (int i = 0; i < 6; i++) set[i] = candidates[combo[i]];
+            var set = new int[pickCount];
+            for (int i = 0; i < pickCount; i++) set[i] = candidates[combo[i]];
             Array.Sort(set);
 
             double numberScore = set.Sum(v => scores[v]);
@@ -142,7 +144,7 @@ public static class PredictionEngine
             .OrderByDescending(kv => kv.Value)
             .ThenByDescending(kv => scores.GetValueOrDefault(kv.Key))
             .ThenBy(kv => kv.Key)
-            .Take(6)
+            .Take(lines[0].Numbers.Length)
             .Select(kv => kv.Key)
             .OrderBy(n => n)
             .ToArray();

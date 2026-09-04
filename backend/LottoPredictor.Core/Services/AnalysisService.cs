@@ -9,6 +9,8 @@ public sealed class AnalysisSnapshot
 {
     public required IReadOnlyList<DrawEvent> Draws { get; init; }
     public required FeatureSet Features { get; init; }
+    public FeatureSet? LuckyStarFeatures { get; init; }
+    public required LotteryProfile Lottery { get; init; }
     public required BacktestReport Backtest { get; init; }
     public required ScoringStrategy ActiveStrategy { get; init; }
     public required IReadOnlyList<ScoringStrategy> AllStrategies { get; init; }
@@ -34,11 +36,23 @@ public class AnalysisOptions
 /// Everything is recomputed automatically whenever a draw is added; nothing needs manual
 /// retraining. The active strategy is simply the candidate with the best walk-forward
 /// average matches on the current dataset.</summary>
-public class AnalysisService(IDbContextFactory<LottoDbContext> contextFactory, AnalysisOptions options)
-    : IAnalysisService
+public class AnalysisService : IAnalysisService
 {
+    private readonly IDbContextFactory<LottoDbContext> contextFactory;
+    private readonly AnalysisOptions options;
+    private readonly ILotterySelection lotterySelection;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private AnalysisSnapshot? _snapshot;
+
+    public AnalysisService(
+        IDbContextFactory<LottoDbContext> contextFactory,
+        AnalysisOptions options,
+        ILotterySelection? lotterySelection = null)
+    {
+        this.contextFactory = contextFactory;
+        this.options = options;
+        this.lotterySelection = lotterySelection ?? new DefaultLotterySelection();
+    }
 
     public async Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default)
     {
@@ -57,11 +71,20 @@ public class AnalysisService(IDbContextFactory<LottoDbContext> contextFactory, A
             if (draws.Count == 0)
                 throw new InvalidOperationException("No draws in database; import the CSV first.");
 
+            var lottery = lotterySelection.Current;
             var events = draws
-                .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(), d.Bonus))
+                .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(),
+                    lottery == LotteryProfile.UkLotto ? d.Bonus : null))
                 .ToList();
 
             var features = FeatureCalculator.Compute(events);
+            var luckyStarEvents = lottery == LotteryProfile.EuroMillions
+                ? draws.Select(d => new DrawEvent(
+                    d.Sequence, d.DrawNumber, d.Date, d.BonusNumbers())).ToList()
+                : null;
+            var luckyStarFeatures = luckyStarEvents is { Count: > 0 }
+                ? FeatureCalculator.Compute(luckyStarEvents)
+                : null;
 
             // Learning step: seed the optimizer with previously learned strategies (persisted)
             // plus the hand-written candidates, generate one generation of new candidates, and
@@ -90,6 +113,8 @@ public class AnalysisService(IDbContextFactory<LottoDbContext> contextFactory, A
             {
                 Draws = events,
                 Features = features,
+                LuckyStarFeatures = luckyStarFeatures,
+                Lottery = lottery,
                 Backtest = backtest,
                 ActiveStrategy = backtest.Best.Strategy,
                 AllStrategies = allStrategies,

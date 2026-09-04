@@ -29,9 +29,22 @@ public interface IDrawService
     Task<DrawDto> UpdateDrawAsync(int id, UpdateDrawRequest request, CancellationToken ct = default);
 }
 
-public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnalysisService analysis)
-    : IDrawService
+public class DrawService : IDrawService
 {
+    private readonly IDbContextFactory<LottoDbContext> contextFactory;
+    private readonly IAnalysisService analysis;
+    private readonly ILotterySelection lotterySelection;
+
+    public DrawService(
+        IDbContextFactory<LottoDbContext> contextFactory,
+        IAnalysisService analysis,
+        ILotterySelection? lotterySelection = null)
+    {
+        this.contextFactory = contextFactory;
+        this.analysis = analysis;
+        this.lotterySelection = lotterySelection ?? new DefaultLotterySelection();
+    }
+
     public async Task<IReadOnlyList<DrawDto>> GetDrawsAsync(int limit = 50, CancellationToken ct = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(ct);
@@ -98,26 +111,38 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
 
     public async Task<DrawDto> AddDrawAsync(AddDrawRequest request, CancellationToken ct = default)
     {
-        var added = await AddRoundsAsync([request.Numbers], [request.Bonus], ct);
+        var added = await AddRoundsAsync(
+            [request.Numbers], [request.Bonus], [request.LuckyStars ?? []], ct);
         return added[0];
     }
 
     public async Task<IReadOnlyList<DrawDto>> AddDrawRoundsAsync(
         AddDrawRoundsRequest request, CancellationToken ct = default)
     {
-        if (request.Rounds is not { Length: 2 })
-            throw new ValidationFailedException(["Exactly two rounds of six numbers are required."]);
-        if (request.Bonuses is { Length: not 2 })
+        var lottery = lotterySelection.Current;
+        if (request.Rounds.Length != lottery.RoundCount)
+            throw new ValidationFailedException(
+                [$"Exactly {lottery.RoundCount} round(s) of {lottery.MainNumberCount} numbers are required."]);
+        if (request.Bonuses is not null && request.Bonuses.Length != lottery.RoundCount)
             throw new ValidationFailedException(["Provide one bonus value per round."]);
+        if (request.LuckyStars is not null && request.LuckyStars.Length != lottery.RoundCount)
+            throw new ValidationFailedException(["Provide one Lucky Star set per round."]);
 
-        return await AddRoundsAsync(request.Rounds, request.Bonuses ?? [null, null], ct);
+        return await AddRoundsAsync(
+            request.Rounds,
+            request.Bonuses ?? Enumerable.Repeat<int?>(null, lottery.RoundCount).ToArray(),
+            request.LuckyStars ?? Enumerable.Range(0, lottery.RoundCount).Select(_ => Array.Empty<int>()).ToArray(),
+            ct);
     }
 
     public async Task<DrawDto> AddLatestRoundAsync(
         AddDrawRequest request, CancellationToken ct = default)
     {
-        var snapshot = await analysis.GetSnapshotAsync(ct);
-        var errors = ValidateResult(request.Numbers, request.Bonus, snapshot.PoolSize);
+        var lottery = lotterySelection.Current;
+        if (lottery.RoundCount == 1)
+            throw new ValidationFailedException([$"{lottery.Name} has one round per draw."]);
+
+        var errors = ValidateResult(request.Numbers, request.Bonus, request.LuckyStars, lottery);
         if (errors.Count > 0) throw new ValidationFailedException(errors);
 
         await using var db = await contextFactory.CreateDbContextAsync(ct);
@@ -125,8 +150,8 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
         var latest = await db.Draws.OrderByDescending(draw => draw.Sequence).FirstOrDefaultAsync(ct)
             ?? throw new InvalidOperationException("No existing draw is available.");
         int existingRounds = await db.Draws.CountAsync(draw => draw.DrawNumber == latest.DrawNumber, ct);
-        if (existingRounds >= 2)
-            throw new ValidationFailedException(["The latest draw already has two rounds."]);
+        if (existingRounds >= lottery.RoundCount)
+            throw new ValidationFailedException([$"The latest draw already has {lottery.RoundCount} rounds."]);
 
         var draw = new Draw
         {
@@ -139,6 +164,7 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
         };
         draw.SetNumbers(request.Numbers);
         draw.Bonus = request.Bonus;
+        SetLuckyStars(draw, request.LuckyStars);
         db.Draws.Add(draw);
 
         var outstanding = await db.Predictions
@@ -158,8 +184,8 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
     public async Task<DrawDto> UpdateDrawAsync(
         int id, UpdateDrawRequest request, CancellationToken ct = default)
     {
-        var snapshot = await analysis.GetSnapshotAsync(ct);
-        var errors = ValidateResult(request.Numbers, request.Bonus, snapshot.PoolSize);
+        var lottery = lotterySelection.Current;
+        var errors = ValidateResult(request.Numbers, request.Bonus, request.LuckyStars, lottery);
         if (errors.Count > 0) throw new ValidationFailedException(errors);
 
         await using var db = await contextFactory.CreateDbContextAsync(ct);
@@ -167,6 +193,8 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
             ?? throw new KeyNotFoundException($"Draw {id} was not found.");
         draw.SetNumbers(request.Numbers);
         draw.Bonus = request.Bonus;
+        draw.Bonus2 = null;
+        SetLuckyStars(draw, request.LuckyStars);
 
         var evaluatedPredictions = await db.Predictions
             .Where(prediction => prediction.EvaluatedDrawId == draw.Id)
@@ -179,11 +207,14 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
     }
 
     private async Task<IReadOnlyList<DrawDto>> AddRoundsAsync(
-        IReadOnlyList<int[]> rounds, IReadOnlyList<int?> bonuses, CancellationToken ct)
+        IReadOnlyList<int[]> rounds,
+        IReadOnlyList<int?> bonuses,
+        IReadOnlyList<int[]> luckyStars,
+        CancellationToken ct)
     {
-        var snapshot = await analysis.GetSnapshotAsync(ct);
+        var lottery = lotterySelection.Current;
         var errors = rounds
-            .SelectMany((numbers, index) => ValidateResult(numbers, bonuses[index], snapshot.PoolSize)
+            .SelectMany((numbers, index) => ValidateResult(numbers, bonuses[index], luckyStars[index], lottery)
                 .Select(error => rounds.Count > 1 ? $"Round {index + 1}: {error}" : error))
             .ToList();
         if (errors.Count > 0) throw new ValidationFailedException(errors);
@@ -207,6 +238,7 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
                 Bonus = bonuses[index],
             };
             draw.SetNumbers(numbers);
+            SetLuckyStars(draw, luckyStars[index]);
             return draw;
         }).ToList();
         db.Draws.AddRange(added);
@@ -231,14 +263,37 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
         return added.Select(ToDto).ToList();
     }
 
-    private static IReadOnlyList<string> ValidateResult(int[] numbers, int? bonus, int poolSize)
+    private static IReadOnlyList<string> ValidateResult(
+        int[] numbers, int? bonus, int[]? luckyStars, LotteryProfile lottery)
     {
-        var errors = NumberValidator.Validate(numbers, poolSize).ToList();
-        if (bonus is < 1 || bonus > poolSize)
-            errors.Add($"Bonus ball must be between 1 and {poolSize}.");
-        else if (bonus.HasValue && numbers.Contains(bonus.Value))
-            errors.Add("Bonus ball must be different from the six main numbers.");
+        var errors = NumberValidator.Validate(
+            numbers, lottery.MainPoolSize, lottery.MainNumberCount).ToList();
+        if (lottery == LotteryProfile.UkLotto)
+        {
+            if (bonus is < 1 || bonus > lottery.BonusPoolSize)
+                errors.Add($"Bonus ball must be between 1 and {lottery.BonusPoolSize}.");
+            else if (bonus.HasValue && numbers.Contains(bonus.Value))
+                errors.Add("Bonus ball must be different from the main numbers.");
+        }
+        else
+        {
+            var stars = luckyStars ?? [];
+            if (stars.Length != lottery.BonusNumberCount)
+                errors.Add($"Exactly {lottery.BonusNumberCount} Lucky Stars are required.");
+            else if (stars.Distinct().Count() != stars.Length)
+                errors.Add("Lucky Stars must be distinct.");
+            else if (stars.Any(star => star < 1 || star > lottery.BonusPoolSize))
+                errors.Add($"Lucky Stars must be between 1 and {lottery.BonusPoolSize}.");
+        }
         return errors;
+    }
+
+    private static void SetLuckyStars(Draw draw, int[]? luckyStars)
+    {
+        if (luckyStars is not { Length: > 0 }) return;
+        var sorted = luckyStars.OrderBy(number => number).ToArray();
+        draw.Bonus = sorted[0];
+        draw.Bonus2 = sorted.Length > 1 ? sorted[1] : null;
     }
 
     private static void EvaluatePredictions(IEnumerable<Prediction> predictions, Draw draw)
@@ -248,11 +303,17 @@ public class DrawService(IDbContextFactory<LottoDbContext> contextFactory, IAnal
         {
             prediction.Matches = Backtester.CountMatches(prediction.Numbers(), actual);
             prediction.ActualNumbersCsv = string.Join(",", actual);
+            var actualStars = draw.BonusNumbers();
+            if (prediction.LuckyStars().Length > 0)
+            {
+                prediction.LuckyStarMatches = Backtester.CountMatches(prediction.LuckyStars(), actualStars);
+                prediction.ActualLuckyStarsCsv = string.Join(",", actualStars);
+            }
             prediction.EvaluatedUtc = DateTime.UtcNow;
         }
     }
 
     internal static DrawDto ToDto(Draw d) => new(
         d.Id, d.Sequence, d.DrawNumber, d.Date.ToString("yyyy-MM-dd"),
-        d.Numbers(), d.Bonus, d.Machine, d.BallSet, d.Source);
+        d.Numbers(), d.Bonus, d.BonusNumbers(), d.Machine, d.BallSet, d.Source);
 }

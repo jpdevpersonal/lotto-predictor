@@ -26,6 +26,7 @@ public sealed class PoolInfo
 
     public static PoolInfo Detect(IReadOnlyList<DrawEvent> draws)
     {
+        int pickCount = draws.Count > 0 ? draws[0].Numbers.Length : 0;
         int max = 0;
         int era2Start = draws.Count;
         for (int i = 0; i < draws.Count; i++)
@@ -37,6 +38,7 @@ public sealed class PoolInfo
             }
         }
         if (max <= 49) era2Start = draws.Count;
+        else if (pickCount != 6) era2Start = 0;
         return new PoolInfo(Math.Max(max, 1), era2Start, draws.Count);
     }
 
@@ -45,5 +47,5 @@ public sealed class PoolInfo
 
     /// <summary>Pool size in force for the draw at the given index.</summary>
     public int PoolAt(int index) =>
-        PoolSize > 49 && index < Era2StartIndex ? 49 : PoolSize;
+        PoolSize > 49 && Era2StartIndex > 0 && index < Era2StartIndex ? 49 : PoolSize;
 }

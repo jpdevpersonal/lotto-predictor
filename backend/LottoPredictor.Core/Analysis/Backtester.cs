@@ -90,8 +90,9 @@ public static class Backtester
                 foreach (var s in strategies) hedge[s.Name] /= norm;
 
             int pool = fs.Pool.PoolAt(prefix.Count - 1);
-            expectedSum += 36.0 / pool;
-            randomMatches.Add(CountMatches(RandomSet(rng, pool), actual));
+            int pickCount = fs.PickCount;
+            expectedSum += (double)(pickCount * pickCount) / pool;
+            randomMatches.Add(CountMatches(RandomSet(rng, pool, pickCount), actual));
         }
 
         var results = strategies
@@ -124,7 +125,7 @@ public static class Backtester
             Strategies = results,
             Best = best,
             RandomExpectedMatches = randomExpected,
-            RandomMatchDistribution = HypergeometricMatchDistribution(pool2.PoolSize),
+            RandomMatchDistribution = HypergeometricMatchDistribution(pool2.PoolSize, draws[0].Numbers.Length),
             RandomSimulated = randomSummary,
             Verdict = verdict,
             WarmupDraws = start,
@@ -144,12 +145,12 @@ public static class Backtester
         new PrefixView(draws, count);
 
     /// <summary>P(k of 6 picked match) for a uniform 6-of-poolSize draw.</summary>
-    public static double[] HypergeometricMatchDistribution(int poolSize)
+    public static double[] HypergeometricMatchDistribution(int poolSize, int pickCount = 6)
     {
-        var dist = new double[7];
-        double denom = Choose(poolSize, 6);
-        for (int k = 0; k <= 6; k++)
-            dist[k] = Choose(6, k) * Choose(poolSize - 6, 6 - k) / denom;
+        var dist = new double[pickCount + 1];
+        double denom = Choose(poolSize, pickCount);
+        for (int k = 0; k <= pickCount; k++)
+            dist[k] = Choose(pickCount, k) * Choose(poolSize - pickCount, pickCount - k) / denom;
         return dist;
     }
 
@@ -161,10 +162,10 @@ public static class Backtester
         return r;
     }
 
-    private static int[] RandomSet(Random rng, int poolSize)
+    private static int[] RandomSet(Random rng, int poolSize, int pickCount)
     {
         var set = new HashSet<int>();
-        while (set.Count < 6) set.Add(rng.Next(1, poolSize + 1));
+        while (set.Count < pickCount) set.Add(rng.Next(1, poolSize + 1));
         return [.. set.OrderBy(x => x)];
     }
 
