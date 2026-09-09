@@ -8,11 +8,14 @@ namespace LottoPredictor.Core.Services;
 
 public interface IPredictionService
 {
-    Task<PredictionDto> GenerateAsync(CancellationToken ct = default);
+    Task<PredictionDto> GenerateAsync(bool excludeLastDrawNumbers = false, CancellationToken ct = default);
     Task<PredictionDto?> GetLatestAsync(CancellationToken ct = default);
     Task<IReadOnlyList<PredictionDto>> GetHistoryAsync(int limit = 100, CancellationToken ct = default);
     /// <summary>Top-N candidate lines, computed on demand and never persisted.</summary>
-    Task<PredictionLinesDto> GenerateLinesAsync(int count = 50, CancellationToken ct = default);
+    Task<PredictionLinesDto> GenerateLinesAsync(
+        int count = 50,
+        bool excludeLastDrawNumbers = false,
+        CancellationToken ct = default);
     /// <summary>Consensus line over the same top-N lines (screen-only).</summary>
     Task<BestOfLinesDto> GenerateBestOfLinesAsync(int count = 50, CancellationToken ct = default);
 }
@@ -20,17 +23,31 @@ public interface IPredictionService
 public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory, IAnalysisService analysis)
     : IPredictionService
 {
-    public async Task<PredictionDto> GenerateAsync(CancellationToken ct = default)
+    public async Task<PredictionDto> GenerateAsync(bool excludeLastDrawNumbers = false, CancellationToken ct = default)
     {
         var snapshot = await analysis.GetSnapshotAsync(ct);
         var strategy = snapshot.ActiveStrategy;
+        HashSet<int>? excludedMain = null;
+        HashSet<int>? excludedLuckyStars = null;
+        if (excludeLastDrawNumbers)
+        {
+            var lastDrawNumbers = snapshot.Draws[^1].Numbers;
+            excludedMain = lastDrawNumbers.Length > 0 ? [.. lastDrawNumbers] : null;
+
+            if (snapshot.LuckyStarFeatures is not null)
+            {
+                var lastLuckyStars = snapshot.LatestLuckyStars;
+                excludedLuckyStars = lastLuckyStars.Length > 0 ? [.. lastLuckyStars] : null;
+            }
+        }
+
         var result = strategy.Name == Backtester.EnsembleName
             ? PredictionEngine.GenerateEnsemble(
-                snapshot.Features, snapshot.AllStrategies, snapshot.HedgeWeights, Backtester.EnsembleName)
-            : PredictionEngine.Generate(snapshot.Features, strategy);
+                snapshot.Features, snapshot.AllStrategies, snapshot.HedgeWeights, Backtester.EnsembleName, excludedMain)
+            : PredictionEngine.Generate(snapshot.Features, strategy, excludedMain);
         var luckyStars = snapshot.LuckyStarFeatures is null
             ? null
-            : GenerateForFeatures(snapshot, snapshot.LuckyStarFeatures).Numbers;
+            : GenerateForFeatures(snapshot, snapshot.LuckyStarFeatures, excludedLuckyStars).Numbers;
         var lastDraw = snapshot.Draws[^1];
 
         var prediction = new Prediction
@@ -54,13 +71,31 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         return ToDto(prediction, explanation);
     }
 
-    public async Task<PredictionLinesDto> GenerateLinesAsync(int count = 50, CancellationToken ct = default)
+    public async Task<PredictionLinesDto> GenerateLinesAsync(
+        int count = 50,
+        bool excludeLastDrawNumbers = false,
+        CancellationToken ct = default)
     {
         count = Math.Clamp(count, 1, 200);
         var snapshot = await analysis.GetSnapshotAsync(ct);
+        HashSet<int>? excludedMain = null;
+        HashSet<int>? excludedLuckyStars = null;
+        if (excludeLastDrawNumbers)
+        {
+            var lastDrawNumbers = snapshot.Draws[^1].Numbers;
+            excludedMain = lastDrawNumbers.Length > 0 ? [.. lastDrawNumbers] : null;
+
+            if (snapshot.LuckyStarFeatures is not null)
+            {
+                var lastLuckyStars = snapshot.LatestLuckyStars;
+                excludedLuckyStars = lastLuckyStars.Length > 0 ? [.. lastLuckyStars] : null;
+            }
+        }
+
         var (scores, strategy) = ActiveScores(snapshot);
-        var lines = PredictionEngine.GenerateTopLines(snapshot.Features, scores, strategy, count);
-        var starLines = GenerateLuckyStarLines(snapshot, count);
+        var lines = PredictionEngine.GenerateTopLines(
+            snapshot.Features, scores, strategy, count, excludedMain);
+        var starLines = GenerateLuckyStarLines(snapshot, count, excludedLuckyStars);
         return new PredictionLinesDto(
             snapshot.ActiveStrategy.Name,
             snapshot.Draws[^1].DrawNumber,
@@ -91,22 +126,22 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
     }
 
     private static IReadOnlyList<PredictionResult> GenerateLuckyStarLines(
-        AnalysisSnapshot snapshot, int count)
+        AnalysisSnapshot snapshot, int count, IReadOnlySet<int>? excludedNumbers = null)
     {
         if (snapshot.LuckyStarFeatures is null) return [];
         var (scores, lineStrategy) = ActiveScores(snapshot, snapshot.LuckyStarFeatures);
         return PredictionEngine.GenerateTopLines(
-            snapshot.LuckyStarFeatures, scores, lineStrategy, count);
+            snapshot.LuckyStarFeatures, scores, lineStrategy, count, excludedNumbers);
     }
 
     private static PredictionResult GenerateForFeatures(
-        AnalysisSnapshot snapshot, FeatureSet features)
+        AnalysisSnapshot snapshot, FeatureSet features, IReadOnlySet<int>? excludedNumbers = null)
     {
         var strategy = snapshot.ActiveStrategy;
         return strategy.Name == Backtester.EnsembleName
             ? PredictionEngine.GenerateEnsemble(
-                features, snapshot.AllStrategies, snapshot.HedgeWeights, Backtester.EnsembleName)
-            : PredictionEngine.Generate(features, strategy);
+                features, snapshot.AllStrategies, snapshot.HedgeWeights, Backtester.EnsembleName, excludedNumbers)
+            : PredictionEngine.Generate(features, strategy, excludedNumbers);
     }
 
     /// <summary>Score map and combination weights for the currently active strategy,

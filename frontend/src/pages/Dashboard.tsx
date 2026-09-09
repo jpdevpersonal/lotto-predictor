@@ -51,6 +51,7 @@ export default function Dashboard({
   const [linesLoading, setLinesLoading] = useState(false);
   const [bestOf, setBestOf] = useState<BestOfLinesDto | null>(null);
   const [bestLoading, setBestLoading] = useState(false);
+  const [excludeLastDrawNumbers, setExcludeLastDrawNumbers] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -79,7 +80,7 @@ export default function Dashboard({
   const generate = async () => {
     setGenerating(true);
     try {
-      setPrediction(await api.generatePrediction());
+      setPrediction(await api.generatePrediction(excludeLastDrawNumbers));
       setHistory(await api.predictionHistory());
       setError("");
     } catch (e) {
@@ -95,7 +96,7 @@ export default function Dashboard({
     setLinesLoading(true);
     setBestOf(null);
     try {
-      setLines(await api.predictionLines(50));
+      setLines(await api.predictionLines(50, excludeLastDrawNumbers));
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to generate lines");
@@ -186,6 +187,16 @@ export default function Dashboard({
         )}
 
         <div className="actions">
+          <label className="prediction-option">
+            <input
+              type="checkbox"
+              checked={excludeLastDrawNumbers}
+              onChange={(event) =>
+                setExcludeLastDrawNumbers(event.target.checked)
+              }
+            />
+            Exclude last draw numbers from this prediction
+          </label>
           <button onClick={generate} disabled={generating}>
             {generating ? "Generating…" : "Generate Prediction"}
           </button>

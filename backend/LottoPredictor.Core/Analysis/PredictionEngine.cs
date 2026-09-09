@@ -46,20 +46,32 @@ public static class PredictionEngine
         return scores;
     }
 
-    public static PredictionResult Generate(FeatureSet fs, ScoringStrategy strategy) =>
-        GenerateFromScores(fs, ScoreNumbers(fs, strategy), strategy);
+    public static PredictionResult Generate(
+        FeatureSet fs,
+        ScoringStrategy strategy,
+        IReadOnlySet<int>? excludedNumbers = null) =>
+        GenerateFromScores(fs, ScoreNumbers(fs, strategy), strategy, excludedNumbers);
 
     /// <summary>Combination search over externally supplied per-number scores. Used directly by
     /// the hedge ensemble, which blends the score maps of several strategies.</summary>
     public static PredictionResult GenerateFromScores(
-        FeatureSet fs, Dictionary<int, double> scores, ScoringStrategy strategy)
+        FeatureSet fs,
+        Dictionary<int, double> scores,
+        ScoringStrategy strategy,
+        IReadOnlySet<int>? excludedNumbers = null)
     {
         int pickCount = fs.PickCount;
-        if (scores.Count < pickCount)
-            throw new InvalidOperationException($"Not enough historical data to score {pickCount} numbers.");
+        var eligibleScores = excludedNumbers is null || excludedNumbers.Count == 0
+            ? scores
+            : scores.Where(kv => !excludedNumbers.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        if (eligibleScores.Count < pickCount)
+            throw new InvalidOperationException(
+                $"Not enough eligible numbers to pick {pickCount} after exclusions.");
 
         // Deterministic ranking: score desc, then lower number first.
-        var ranked = scores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
+        var ranked = eligibleScores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
             .Select(kv => kv.Key).ToArray();
         var candidates = ranked.Take(Math.Min(CandidatePoolSize, ranked.Length)).ToArray();
 
@@ -73,7 +85,7 @@ public static class PredictionEngine
             for (int i = 0; i < pickCount; i++) set[i] = candidates[combo[i]];
             Array.Sort(set);
 
-            double numberScore = set.Sum(v => scores[v]);
+            double numberScore = set.Sum(v => eligibleScores[v]);
             double synergy = PairSynergy(fs, set);
             double penalty = TypicalityPenalty(fs, set);
             double total = numberScore + strategy.PairWeight * synergy - strategy.PenaltyWeight * penalty;
@@ -87,20 +99,30 @@ public static class PredictionEngine
             }
         }
 
-        var selected = best!.Select(v => new ScoredNumber(fs.For(v), scores[v])).ToList();
+        var selected = best!.Select(v => new ScoredNumber(fs.For(v), eligibleScores[v])).ToList();
         return new PredictionResult(best!, strategy, selected, bestScore, bestPenalty, bestSynergy);
     }
 
     /// <summary>The top-ranked distinct lines under a strategy, best first. Same deterministic
     /// combination search as the single prediction, but keeping the N best sets.</summary>
     public static IReadOnlyList<PredictionResult> GenerateTopLines(
-        FeatureSet fs, Dictionary<int, double> scores, ScoringStrategy strategy, int count)
+        FeatureSet fs,
+        Dictionary<int, double> scores,
+        ScoringStrategy strategy,
+        int count,
+        IReadOnlySet<int>? excludedNumbers = null)
     {
         int pickCount = fs.PickCount;
-        if (scores.Count < pickCount)
-            throw new InvalidOperationException($"Not enough historical data to score {pickCount} numbers.");
+        var eligibleScores = excludedNumbers is null || excludedNumbers.Count == 0
+            ? scores
+            : scores.Where(kv => !excludedNumbers.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
 
-        var ranked = scores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
+        if (eligibleScores.Count < pickCount)
+            throw new InvalidOperationException(
+                $"Not enough eligible numbers to pick {pickCount} after exclusions.");
+
+        var ranked = eligibleScores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
             .Select(kv => kv.Key).ToArray();
         var candidates = ranked.Take(Math.Min(CandidatePoolSize, ranked.Length)).ToArray();
 
@@ -111,7 +133,7 @@ public static class PredictionEngine
             for (int i = 0; i < pickCount; i++) set[i] = candidates[combo[i]];
             Array.Sort(set);
 
-            double numberScore = set.Sum(v => scores[v]);
+            double numberScore = set.Sum(v => eligibleScores[v]);
             double synergy = PairSynergy(fs, set);
             double penalty = TypicalityPenalty(fs, set);
             all.Add((set, numberScore + strategy.PairWeight * synergy - strategy.PenaltyWeight * penalty,
@@ -124,7 +146,7 @@ public static class PredictionEngine
             .Take(count)
             .Select(l => new PredictionResult(
                 l.Set, strategy,
-                l.Set.Select(v => new ScoredNumber(fs.For(v), scores[v])).ToList(),
+                l.Set.Select(v => new ScoredNumber(fs.For(v), eligibleScores[v])).ToList(),
                 l.Total, l.Penalty, l.Synergy))
             .ToList();
     }
@@ -176,7 +198,8 @@ public static class PredictionEngine
         FeatureSet fs,
         IReadOnlyList<ScoringStrategy> strategies,
         IReadOnlyDictionary<string, double> weights,
-        string ensembleName)
+        string ensembleName,
+        IReadOnlySet<int>? excludedNumbers = null)
     {
         double total = strategies.Sum(s => weights.GetValueOrDefault(s.Name));
         var parts = strategies
@@ -186,7 +209,7 @@ public static class PredictionEngine
         double pairW = strategies.Sum(s => (total > 0 ? weights.GetValueOrDefault(s.Name) / total : 1.0 / strategies.Count) * s.PairWeight);
         double penW = strategies.Sum(s => (total > 0 ? weights.GetValueOrDefault(s.Name) / total : 1.0 / strategies.Count) * s.PenaltyWeight);
         var pseudo = new ScoringStrategy(ensembleName, 0, 0, 0, 0, pairW, penW);
-        return GenerateFromScores(fs, blended, pseudo);
+        return GenerateFromScores(fs, blended, pseudo, excludedNumbers);
     }
 
     /// <summary>Mean clipped deviation of observed pair co-occurrence from uniform expectation.</summary>

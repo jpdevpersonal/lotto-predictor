@@ -14,6 +14,8 @@ public record DrawDto(
 
 public record AddDrawRequest(int[] Numbers, int? Bonus = null, int[]? LuckyStars = null);
 
+public record GeneratePredictionRequest(bool ExcludeLastDrawNumbers = false);
+
 public record AddDrawRoundsRequest(int[][] Rounds, int?[]? Bonuses = null, int[][]? LuckyStars = null);
 
 public record UpdateDrawRequest(int[] Numbers, int? Bonus = null, int[]? LuckyStars = null);

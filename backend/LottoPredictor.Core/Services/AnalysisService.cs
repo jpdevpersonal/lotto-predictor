@@ -11,6 +11,7 @@ public sealed class AnalysisSnapshot
     public required IReadOnlyList<DrawEvent> Draws { get; init; }
     public required FeatureSet Features { get; init; }
     public FeatureSet? LuckyStarFeatures { get; init; }
+    public required int[] LatestLuckyStars { get; init; }
     public required LotteryProfile Lottery { get; init; }
     public required BacktestReport Backtest { get; init; }
     public required ScoringStrategy ActiveStrategy { get; init; }
@@ -121,6 +122,9 @@ public class AnalysisService : IAnalysisService
                 Draws = events,
                 Features = features,
                 LuckyStarFeatures = luckyStarFeatures,
+                LatestLuckyStars = lottery == LotteryProfile.EuroMillions
+                    ? draws[^1].BonusNumbers()
+                    : [],
                 Lottery = lottery,
                 Backtest = backtest,
                 ActiveStrategy = backtest.Best.Strategy,

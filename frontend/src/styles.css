@@ -381,6 +381,23 @@ input.star-input {
   flex-wrap: wrap;
 }
 
+.prediction-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  background: var(--surface-alt);
+}
+
+.prediction-option input {
+  margin: 0;
+}
+
 button {
   padding: 0.6rem 1.2rem;
   border: 1px solid var(--primary);
