@@ -7,10 +7,11 @@ public sealed record LotteryProfile(
     int MainPoolSize,
     int BonusNumberCount,
     int BonusPoolSize,
-    int RoundCount)
+    int RoundCount,
+    DateOnly? MainPoolExpansionDate = null)
 {
     public static LotteryProfile UkLotto { get; } = new(
-        "uk-lotto", "UK National Lottery", 6, 59, 1, 59, 2);
+        "uk-lotto", "UK National Lottery", 6, 59, 1, 59, 2, new DateOnly(2015, 10, 10));
 
     public static LotteryProfile EuroMillions { get; } = new(
         "euromillions", "EuroMillions", 5, 50, 2, 12, 1);

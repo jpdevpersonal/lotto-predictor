@@ -24,22 +24,35 @@ public sealed class PoolInfo
         DrawCount = drawCount;
     }
 
-    public static PoolInfo Detect(IReadOnlyList<DrawEvent> draws)
+    public static PoolInfo Detect(
+        IReadOnlyList<DrawEvent> draws,
+        int? configuredPoolSize = null,
+        DateOnly? poolExpansionDate = null)
     {
         int pickCount = draws.Count > 0 ? draws[0].Numbers.Length : 0;
-        int max = 0;
+        int observedMax = 0;
         int era2Start = draws.Count;
         for (int i = 0; i < draws.Count; i++)
         {
             foreach (var v in draws[i].Numbers)
             {
-                if (v > max) max = v;
+                if (v > observedMax) observedMax = v;
                 if (v > 49 && i < era2Start) era2Start = i;
             }
         }
-        if (max <= 49) era2Start = draws.Count;
+        int poolSize = configuredPoolSize ?? observedMax;
+        if (poolSize < observedMax)
+            throw new InvalidOperationException(
+                $"Observed ball {observedMax} exceeds configured pool size {poolSize}.");
+        if (poolSize <= 49) era2Start = draws.Count;
+        else if (poolExpansionDate is DateOnly expansionDate)
+        {
+            era2Start = 0;
+            while (era2Start < draws.Count && draws[era2Start].Date < expansionDate)
+                era2Start++;
+        }
         else if (pickCount != 6) era2Start = 0;
-        return new PoolInfo(Math.Max(max, 1), era2Start, draws.Count);
+        return new PoolInfo(Math.Max(poolSize, 1), era2Start, draws.Count);
     }
 
     /// <summary>First draw index at which the given number could have been drawn.</summary>

@@ -85,13 +85,14 @@ public class AnalysisService : IAnalysisService
                     lottery == LotteryProfile.UkLotto ? d.Bonus : null))
                 .ToList();
 
-            var features = FeatureCalculator.Compute(events);
+            var features = FeatureCalculator.Compute(
+                events, lottery.MainPoolSize, lottery.MainPoolExpansionDate);
             var luckyStarEvents = lottery == LotteryProfile.EuroMillions
                 ? draws.Select(d => new DrawEvent(
                     d.Sequence, d.DrawNumber, d.Date, d.BonusNumbers())).ToList()
                 : null;
             var luckyStarFeatures = luckyStarEvents is { Count: > 0 }
-                ? FeatureCalculator.Compute(luckyStarEvents)
+                ? FeatureCalculator.Compute(luckyStarEvents, lottery.BonusPoolSize)
                 : null;
 
             // Learning step: seed the optimizer with previously learned strategies (persisted)
@@ -113,7 +114,9 @@ public class AnalysisService : IAnalysisService
                 .ToList();
 
             var backtest = Backtester.Run(
-                events, allStrategies, options.BacktestEvalWindow, options.BacktestWarmup);
+                events, allStrategies, options.BacktestEvalWindow, options.BacktestWarmup,
+                configuredPoolSize: lottery.MainPoolSize,
+                poolExpansionDate: lottery.MainPoolExpansionDate);
 
             await PersistLearningAsync(db, backtest, generation, events.Count, ct);
 

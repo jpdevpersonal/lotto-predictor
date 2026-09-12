@@ -1,6 +1,7 @@
 using LottoPredictor.Core.Analysis;
 using LottoPredictor.Core.Data;
 using LottoPredictor.Core.Dtos;
+using LottoPredictor.Core.Models;
 using LottoPredictor.Core.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -90,7 +91,7 @@ public class EuroMillionsTests
         try
         {
             var selection = new MutableLotterySelection();
-            var factory = new ProfileDbFactory(selection, ukPath, euroPath);
+            IDbContextFactory<LottoDbContext> factory = new ProfileDbFactory(selection, ukPath, euroPath);
             SeedDraws(factory, TestData.RandomHistory(5, 59));
 
             selection.CurrentProfile = LotteryProfile.EuroMillions;
@@ -145,6 +146,8 @@ public class EuroMillionsTests
                 Sequence = item.Sequence,
                 DrawNumber = item.DrawNumber,
                 Date = item.Date,
+                Bonus = item.Numbers.Length == 5 ? 1 : null,
+                Bonus2 = item.Numbers.Length == 5 ? 2 : null,
                 Source = "test",
             };
             draw.SetNumbers(item.Numbers);
