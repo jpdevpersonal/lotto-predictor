@@ -158,7 +158,7 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
           <h2>Draw History</h2>
           <p className="muted">
             Review every stored {lottery.name} draw and correct its numbers
-            {lottery.luckyStarCount > 0 ? " or Lucky Stars" : " or bonus ball"}.
+            {lottery.luckyStarCount > 0 ? ` or ${lottery.bonusLabel}` : " or bonus ball"}.
           </p>
         </div>
         {canAddLatestRound && (
@@ -200,7 +200,7 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
             <input
               type="number"
               min={1}
-              max={59}
+              max={lottery.mainPoolSize}
               value={roundBonus}
               aria-label="New round bonus ball"
               placeholder="Bonus"
@@ -236,7 +236,7 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
                   <th>Date</th>
                   <th>Round</th>
                   <th>Numbers</th>
-                  <th>{lottery.luckyStarCount > 0 ? "Lucky Stars" : "Bonus"}</th>
+                  <th>{lottery.luckyStarCount > 0 ? `${lottery.bonusLabel}s` : "Bonus"}</th>
                   <th>Source</th>
                   <th>Action</th>
                 </tr>
@@ -315,7 +315,7 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
                                 min={1}
                                 max={lottery.luckyStarPoolSize}
                                 value={value}
-                                aria-label={`Draw ${draw.drawNumber}, Lucky Star ${index + 1}`}
+                                aria-label={`Draw ${draw.drawNumber}, ${lottery.bonusLabel} ${index + 1}`}
                                 onChange={(event) =>
                                   setNumberValue(
                                     editStars,

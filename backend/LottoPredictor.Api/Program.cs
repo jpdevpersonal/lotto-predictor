@@ -12,6 +12,7 @@ builder.Services.AddSingleton<IDbContextFactory<LottoDbContext>, LotteryDbContex
 builder.Services.AddSingleton(new AnalysisOptions());
 builder.Services.AddSingleton<ICsvImporter, CsvImporter>();
 builder.Services.AddSingleton<IEuroMillionsCsvImporter, EuroMillionsCsvImporter>();
+builder.Services.AddSingleton<ISetForLifeCsvImporter, SetForLifeCsvImporter>();
 builder.Services.AddSingleton<IAnalysisService, AnalysisService>();
 builder.Services.AddScoped<IDrawService, DrawService>();
 builder.Services.AddScoped<IPredictionService, PredictionService>();
@@ -30,7 +31,7 @@ app.MapControllers();
 // One-time seed: create schema and import the historical CSV if the database is empty.
 using (var scope = app.Services.CreateScope())
 {
-    foreach (var lottery in new[] { LotteryProfile.UkLotto, LotteryProfile.EuroMillions })
+    foreach (var lottery in LotteryProfile.All)
     {
         var options = new DbContextOptionsBuilder<LottoDbContext>()
             .UseSqlite($"Data Source={LotteryDbContextFactory.DatabasePath(builder.Environment.ContentRootPath, lottery)}")
@@ -117,7 +118,7 @@ using (var scope = app.Services.CreateScope())
         }
 #pragma warning restore EF1002
 
-        var bonusMatchesSql = lottery == LotteryProfile.UkLotto
+        var bonusMatchesSql = lottery.BonusSharesMainPool
             ? "CASE WHEN d.\"Bonus\" IN (p.\"P1\", p.\"P2\", p.\"P3\", p.\"P4\", p.\"P5\", p.\"P6\") THEN 1 ELSE 0 END"
             : "NULL";
 #pragma warning disable EF1002 // The only interpolation is the fixed expression selected above.
@@ -139,15 +140,20 @@ using (var scope = app.Services.CreateScope())
             string csvPath = lottery == LotteryProfile.EuroMillions
                 ? app.Configuration["EuroMillionsCsvImportPath"]
                     ?? Path.Combine(builder.Environment.ContentRootPath, "..", "..", "euromillions.csv")
-                : app.Configuration["CsvImportPath"]
-                    ?? Path.Combine(builder.Environment.ContentRootPath, "..", "..", "numbers.csv");
+                : lottery == LotteryProfile.SetForLife
+                    ? app.Configuration["SetForLifeCsvImportPath"]
+                        ?? Path.Combine(builder.Environment.ContentRootPath, "..", "..", "set_for_life.csv")
+                    : app.Configuration["CsvImportPath"]
+                        ?? Path.Combine(builder.Environment.ContentRootPath, "..", "..", "numbers.csv");
             csvPath = Path.GetFullPath(csvPath);
             if (File.Exists(csvPath))
             {
                 using var reader = new StreamReader(csvPath);
                 var draws = lottery == LotteryProfile.EuroMillions
                     ? scope.ServiceProvider.GetRequiredService<IEuroMillionsCsvImporter>().Parse(reader)
-                    : scope.ServiceProvider.GetRequiredService<ICsvImporter>().Parse(reader);
+                    : lottery == LotteryProfile.SetForLife
+                        ? scope.ServiceProvider.GetRequiredService<ISetForLifeCsvImporter>().Parse(reader)
+                        : scope.ServiceProvider.GetRequiredService<ICsvImporter>().Parse(reader);
                 db.Draws.AddRange(draws);
                 await db.SaveChangesAsync();
                 app.Logger.LogInformation(

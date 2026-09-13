@@ -162,3 +162,71 @@ public class EuroMillionsCsvImporter : IEuroMillionsCsvImporter
         return ordered;
     }
 }
+
+public interface ISetForLifeCsvImporter
+{
+    List<Draw> Parse(TextReader reader);
+}
+
+/// <summary>Parses the set_for_life.csv export: one round per draw event, five main numbers
+/// (1-47) plus a single Life Ball (1-10) stored in Draw.Bonus.</summary>
+public class SetForLifeCsvImporter : ISetForLifeCsvImporter
+{
+    public List<Draw> Parse(TextReader reader)
+    {
+        string? headerLine = reader.ReadLine()
+            ?? throw new InvalidDataException("CSV file is empty.");
+        var headers = headerLine.TrimStart('\uFEFF').Split(',').Select(header => header.Trim()).ToArray();
+        var index = headers
+            .Select((header, position) => (header, position))
+            .ToDictionary(item => item.header, item => item.position, StringComparer.OrdinalIgnoreCase);
+
+        string Column(params string[] names) => names.FirstOrDefault(index.ContainsKey)
+            ?? throw new InvalidDataException($"CSV is missing required column '{names[0]}'.");
+
+        var dateColumn = Column("Draw Date", "draw_date");
+        var mainNumberColumns = Enumerable.Range(1, 5)
+            .Select(n => Column($"Main Number {n}"))
+            .ToArray();
+        var lifeBallColumn = Column("Life Ball", "life_ball");
+
+        var draws = new List<Draw>();
+        string? line;
+        int rowNumber = 1;
+        while ((line = reader.ReadLine()) != null)
+        {
+            rowNumber++;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            var fields = line.Split(',');
+            if (fields.Length < headers.Length)
+                throw new InvalidDataException($"CSV row {rowNumber} has {fields.Length} fields, expected {headers.Length}.");
+
+            string Get(string column) => fields[index[column]].Trim();
+            int GetInt(string column) => int.Parse(Get(column), CultureInfo.InvariantCulture);
+
+            var numbers = mainNumberColumns.Select(GetInt).ToArray();
+            if (numbers.Distinct().Count() != numbers.Length)
+                throw new InvalidDataException($"CSV row {rowNumber} contains duplicate main numbers.");
+
+            var draw = new Draw
+            {
+                DrawNumber = rowNumber - 1,
+                Date = DateOnly.ParseExact(Get(dateColumn), "yyyy-MM-dd", CultureInfo.InvariantCulture),
+                Bonus = GetInt(lifeBallColumn),
+                Machine = "Set For Life",
+                Source = "csv",
+            };
+            draw.SetNumbers(numbers);
+            draws.Add(draw);
+        }
+
+        var ordered = draws.OrderBy(draw => draw.Date).ThenBy(draw => draw.DrawNumber).ToList();
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            ordered[i].Sequence = i + 1;
+            ordered[i].DrawNumber = i + 1;
+        }
+        return ordered;
+    }
+}
