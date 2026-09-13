@@ -29,6 +29,7 @@ require_command dotnet
 require_command node
 require_command npm
 require_command curl
+require_command lsof
 
 port_is_in_use() {
     local host="$1"
@@ -36,16 +37,39 @@ port_is_in_use() {
     (echo >"/dev/tcp/$host/$port") >/dev/null 2>&1
 }
 
+free_port() {
+    local port="$1"
+    local pids
+    pids="$(lsof -ti tcp:"$port" 2>/dev/null || true)"
+    [[ -z "$pids" ]] && return 0
+    printf 'Port %s is in use, stopping existing process(es): %s\n' "$port" "$pids"
+    kill $pids 2>/dev/null || true
+    for _ in {1..10}; do
+        port_is_in_use 127.0.0.1 "$port" || return 0
+        sleep 0.5
+    done
+    pids="$(lsof -ti tcp:"$port" 2>/dev/null || true)"
+    [[ -n "$pids" ]] && kill -9 $pids 2>/dev/null || true
+    for _ in {1..10}; do
+        port_is_in_use 127.0.0.1 "$port" || return 0
+        sleep 0.5
+    done
+}
+
 if port_is_in_use 127.0.0.1 5080; then
-    printf 'Cannot start Lotto Predictor: API port 5080 is already in use.\n' >&2
-    printf 'Stop the existing process, or use the already-running app.\n' >&2
-    exit 1
+    free_port 5080
+    if port_is_in_use 127.0.0.1 5080; then
+        printf 'Cannot start Lotto Predictor: API port 5080 is still in use.\n' >&2
+        exit 1
+    fi
 fi
 
 if port_is_in_use 127.0.0.1 5173; then
-    printf 'Cannot start Lotto Predictor: UI port 5173 is already in use.\n' >&2
-    printf 'Stop the existing process, or use the already-running app.\n' >&2
-    exit 1
+    free_port 5173
+    if port_is_in_use 127.0.0.1 5173; then
+        printf 'Cannot start Lotto Predictor: UI port 5173 is still in use.\n' >&2
+        exit 1
+    fi
 fi
 
 if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
@@ -73,7 +97,7 @@ if ! curl --silent --fail "$API_URL/api/draws/latest" >/dev/null; then
 fi
 
 printf 'Starting frontend at %s...\n' "$UI_URL"
-npm --prefix "$FRONTEND_DIR" run dev -- --host 127.0.0.1 &
+npm --prefix "$FRONTEND_DIR" run dev &
 UI_PID=$!
 
 printf '\nLotto Predictor is running. Open %s\nPress Ctrl+C to stop both services.\n\n' "$UI_URL"
