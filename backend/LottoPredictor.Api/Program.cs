@@ -77,6 +77,27 @@ using (var scope = app.Services.CreateScope())
         """);
         await db.Database.ExecuteSqlRawAsync(
             "CREATE INDEX IF NOT EXISTS \"IX_StrategyPerformanceLogs_DrawCount\" ON \"StrategyPerformanceLogs\" (\"DrawCount\");");
+        await db.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "PredictionEvaluations" (
+            "Id" INTEGER NOT NULL CONSTRAINT "PK_PredictionEvaluations" PRIMARY KEY AUTOINCREMENT,
+            "PredictionId" INTEGER NOT NULL,
+            "EvaluatedDrawId" INTEGER NOT NULL,
+            "ActualNumbersCsv" TEXT NOT NULL,
+            "Matches" INTEGER NOT NULL,
+            "BonusMatches" INTEGER NULL,
+            "ActualLuckyStarsCsv" TEXT NULL,
+            "LuckyStarMatches" INTEGER NULL,
+            "EvaluatedUtc" TEXT NOT NULL,
+            CONSTRAINT "FK_PredictionEvaluations_Predictions_PredictionId"
+                FOREIGN KEY ("PredictionId") REFERENCES "Predictions" ("Id") ON DELETE CASCADE,
+            CONSTRAINT "FK_PredictionEvaluations_Draws_EvaluatedDrawId"
+                FOREIGN KEY ("EvaluatedDrawId") REFERENCES "Draws" ("Id") ON DELETE CASCADE
+        );
+        """);
+        await db.Database.ExecuteSqlRawAsync("""
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_PredictionEvaluations_PredictionId_EvaluatedDrawId"
+        ON "PredictionEvaluations" ("PredictionId", "EvaluatedDrawId");
+        """);
 
     #pragma warning disable EF1002 // Values below are compile-time schema identifiers, never request data.
         foreach (var (table, column, definition) in new[]
@@ -96,11 +117,28 @@ using (var scope = app.Services.CreateScope())
         }
 #pragma warning restore EF1002
 
+        var bonusMatchesSql = lottery == LotteryProfile.UkLotto
+            ? "CASE WHEN d.\"Bonus\" IN (p.\"P1\", p.\"P2\", p.\"P3\", p.\"P4\", p.\"P5\", p.\"P6\") THEN 1 ELSE 0 END"
+            : "NULL";
+#pragma warning disable EF1002 // The only interpolation is the fixed expression selected above.
+        await db.Database.ExecuteSqlRawAsync($$"""
+        INSERT OR IGNORE INTO "PredictionEvaluations" (
+            "PredictionId", "EvaluatedDrawId", "ActualNumbersCsv", "Matches",
+            "BonusMatches", "ActualLuckyStarsCsv", "LuckyStarMatches", "EvaluatedUtc")
+        SELECT p."Id", p."EvaluatedDrawId", COALESCE(p."ActualNumbersCsv", ''), p."Matches",
+            {{bonusMatchesSql}}, p."ActualLuckyStarsCsv", p."LuckyStarMatches",
+            COALESCE(p."EvaluatedUtc", p."CreatedUtc")
+        FROM "Predictions" p
+        JOIN "Draws" d ON d."Id" = p."EvaluatedDrawId"
+        WHERE p."Matches" IS NOT NULL AND p."EvaluatedDrawId" IS NOT NULL;
+        """);
+#pragma warning restore EF1002
+
         if (!await db.Draws.AnyAsync())
         {
             string csvPath = lottery == LotteryProfile.EuroMillions
                 ? app.Configuration["EuroMillionsCsvImportPath"]
-                    ?? "/mnt/c/Users/Admin/Desktop/euromillions_draw_history_2004_to_2026-09-01.csv"
+                    ?? Path.Combine(builder.Environment.ContentRootPath, "..", "..", "euromillions.csv")
                 : app.Configuration["CsvImportPath"]
                     ?? Path.Combine(builder.Environment.ContentRootPath, "..", "..", "numbers.csv");
             csvPath = Path.GetFullPath(csvPath);

@@ -10,6 +10,36 @@ namespace LottoPredictor.Tests;
 public class EuroMillionsTests
 {
     [Fact]
+    public void Csv_importer_parses_human_readable_euromillions_export()
+    {
+        const string csv = """
+            Draw Date,Draw Day,Main Number 1,Main Number 2,Main Number 3,Main Number 4,Main Number 5,Lucky Star 1,Lucky Star 2
+            13/02/2004,Friday,16,29,32,36,41,7,9
+            20/02/2004,Friday,7,13,39,47,50,2,5
+            """;
+
+        var draws = new EuroMillionsCsvImporter().Parse(new StringReader(csv));
+
+        Assert.Collection(draws,
+            first =>
+            {
+                Assert.Equal(1, first.Sequence);
+                Assert.Equal(1, first.DrawNumber);
+                Assert.Equal(new DateOnly(2004, 2, 13), first.Date);
+                Assert.Equal([16, 29, 32, 36, 41], first.Numbers());
+                Assert.Equal([7, 9], first.BonusNumbers());
+            },
+            second =>
+            {
+                Assert.Equal(2, second.Sequence);
+                Assert.Equal(2, second.DrawNumber);
+                Assert.Equal(new DateOnly(2004, 2, 20), second.Date);
+                Assert.Equal([7, 13, 39, 47, 50], second.Numbers());
+                Assert.Equal([2, 5], second.BonusNumbers());
+            });
+    }
+
+    [Fact]
     public void Prediction_engine_generates_five_main_numbers_and_two_stars()
     {
         var history = TestData.RandomHistory(200, 50)
@@ -75,6 +105,37 @@ public class EuroMillionsTests
 
             Assert.Equal([1, 11, 22, 33, 44], updated.Numbers);
             Assert.Equal([7, 12], updated.LuckyStars);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Empty_euromillions_database_returns_dashboard_states_instead_of_errors()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"euromillions-test-{Guid.NewGuid():N}.db");
+        try
+        {
+            var factory = new TestDbFactory(path);
+            var selection = new EuroMillionsSelection();
+            var analysis = new NoOpAnalysisService();
+            var draws = new DrawService(factory, analysis, selection);
+            var statistics = new StatisticsService(analysis, draws, selection);
+            var learning = new LearningService(factory, analysis);
+
+            var stats = await statistics.GetStatisticsAsync();
+            var backtesting = await statistics.GetBacktestingAsync();
+            var learningState = await learning.GetLearningAsync();
+
+            Assert.Equal(0, stats.DrawCount);
+            Assert.Equal(50, stats.PoolSize);
+            Assert.Empty(backtesting.Strategies);
+            Assert.Equal("Waiting for draw history", backtesting.ActiveStrategyName);
+            Assert.Equal(0, learningState.AnalyzedDrawCount);
+            Assert.Equal("Waiting for draw history", learningState.ActiveStrategyName);
         }
         finally
         {

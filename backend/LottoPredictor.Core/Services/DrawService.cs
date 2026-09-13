@@ -112,7 +112,7 @@ public class DrawService : IDrawService
     public async Task<DrawDto> AddDrawAsync(AddDrawRequest request, CancellationToken ct = default)
     {
         var added = await AddRoundsAsync(
-            [request.Numbers], [request.Bonus], [request.LuckyStars ?? []], ct);
+            [request.Numbers], [request.Bonus], [request.LuckyStars ?? []], request.DrawNumber, request.Date, ct);
         return added[0];
     }
 
@@ -132,6 +132,8 @@ public class DrawService : IDrawService
             request.Rounds,
             request.Bonuses ?? Enumerable.Repeat<int?>(null, lottery.RoundCount).ToArray(),
             request.LuckyStars ?? Enumerable.Range(0, lottery.RoundCount).Select(_ => Array.Empty<int>()).ToArray(),
+            request.DrawNumber,
+            request.Date,
             ct);
     }
 
@@ -167,14 +169,18 @@ public class DrawService : IDrawService
         SetLuckyStars(draw, request.LuckyStars);
         db.Draws.Add(draw);
 
+        await db.SaveChangesAsync(ct);
+
         var outstanding = await db.Predictions
-            .Where(prediction => prediction.Matches == null && prediction.CutoffSequence < draw.Sequence)
+            .Include(prediction => prediction.Evaluations)
+            .Where(prediction =>
+                (prediction.Matches == null && prediction.CutoffSequence < draw.Sequence) ||
+                prediction.Evaluations.Any(evaluation =>
+                    evaluation.EvaluatedDraw.DrawNumber == draw.DrawNumber))
             .ToListAsync(ct);
-        EvaluatePredictions(outstanding, draw);
+        AddPredictionEvaluations(db, outstanding, draw, lottery);
 
         await db.SaveChangesAsync(ct);
-        foreach (var prediction in outstanding) prediction.EvaluatedDrawId = draw.Id;
-        if (outstanding.Count > 0) await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
 
         analysis.Invalidate();
@@ -196,11 +202,16 @@ public class DrawService : IDrawService
         if (lottery == LotteryProfile.UkLotto)
             draw.Bonus2 = null;
         SetLuckyStars(draw, request.LuckyStars);
+        if (request.DrawNumber.HasValue)
+            draw.DrawNumber = request.DrawNumber.Value;
+        if (request.Date is not null)
+            draw.Date = ParseDate(request.Date);
 
         var evaluatedPredictions = await db.Predictions
-            .Where(prediction => prediction.EvaluatedDrawId == draw.Id)
+            .Include(prediction => prediction.Evaluations)
+            .Where(prediction => prediction.Evaluations.Any(evaluation => evaluation.EvaluatedDrawId == draw.Id))
             .ToListAsync(ct);
-        EvaluatePredictions(evaluatedPredictions, draw);
+        UpdatePredictionEvaluations(evaluatedPredictions, draw, lottery);
 
         await db.SaveChangesAsync(ct);
         analysis.Invalidate();
@@ -211,6 +222,8 @@ public class DrawService : IDrawService
         IReadOnlyList<int[]> rounds,
         IReadOnlyList<int?> bonuses,
         IReadOnlyList<int[]> luckyStars,
+        int? drawNumber,
+        string? date,
         CancellationToken ct)
     {
         var lottery = lotterySelection.Current;
@@ -225,13 +238,14 @@ public class DrawService : IDrawService
         int maxSequence = await db.Draws.MaxAsync(d => (int?)d.Sequence, ct) ?? 0;
         int maxDrawNumber = await db.Draws.MaxAsync(d => (int?)d.DrawNumber, ct) ?? 0;
 
-        var drawDate = DateOnly.FromDateTime(DateTime.UtcNow);
+        var drawDate = date is not null ? ParseDate(date) : DateOnly.FromDateTime(DateTime.UtcNow);
+        var resolvedDrawNumber = drawNumber ?? maxDrawNumber + 1;
         var added = rounds.Select((numbers, index) =>
         {
             var draw = new Draw
             {
                 Sequence = maxSequence + index + 1,
-                DrawNumber = maxDrawNumber + 1,
+                DrawNumber = resolvedDrawNumber,
                 Date = drawDate,
                 Machine = $"Manual Round {index + 1}",
                 BallSet = "",
@@ -244,24 +258,30 @@ public class DrawService : IDrawService
         }).ToList();
         db.Draws.AddRange(added);
 
-        // A pending prediction targets the first chronological round after its cutoff.
-        var firstDraw = added[0];
-        var outstanding = await db.Predictions
-            .Where(p => p.Matches == null && p.CutoffSequence < firstDraw.Sequence)
-            .ToListAsync(ct);
-        EvaluatePredictions(outstanding, firstDraw);
-
         await db.SaveChangesAsync(ct);
 
-        foreach (var prediction in outstanding)
+        var firstDraw = added[0];
+        var outstanding = await db.Predictions
+            .Include(prediction => prediction.Evaluations)
+            .Where(prediction => prediction.Matches == null && prediction.CutoffSequence < firstDraw.Sequence)
+            .ToListAsync(ct);
+        foreach (var draw in added)
         {
-            prediction.EvaluatedDrawId = firstDraw.Id;
+            AddPredictionEvaluations(db, outstanding, draw, lottery);
         }
-        if (outstanding.Count > 0) await db.SaveChangesAsync(ct);
+
+        await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
 
         analysis.Invalidate();
         return added.Select(ToDto).ToList();
+    }
+
+    private static DateOnly ParseDate(string date)
+    {
+        if (!DateOnly.TryParse(date, out var parsed))
+            throw new ValidationFailedException([$"'{date}' is not a valid date."]);
+        return parsed;
     }
 
     private static IReadOnlyList<string> ValidateResult(
@@ -297,21 +317,81 @@ public class DrawService : IDrawService
         draw.Bonus2 = sorted.Length > 1 ? sorted[1] : null;
     }
 
-    private static void EvaluatePredictions(IEnumerable<Prediction> predictions, Draw draw)
+    private static void AddPredictionEvaluations(
+        LottoDbContext db,
+        IEnumerable<Prediction> predictions,
+        Draw draw,
+        LotteryProfile lottery)
     {
-        var actual = draw.Numbers();
         foreach (var prediction in predictions)
         {
-            prediction.Matches = Backtester.CountMatches(prediction.Numbers(), actual);
-            prediction.ActualNumbersCsv = string.Join(",", actual);
-            var actualStars = draw.BonusNumbers();
-            if (prediction.LuckyStars().Length > 0)
-            {
-                prediction.LuckyStarMatches = Backtester.CountMatches(prediction.LuckyStars(), actualStars);
-                prediction.ActualLuckyStarsCsv = string.Join(",", actualStars);
-            }
-            prediction.EvaluatedUtc = DateTime.UtcNow;
+            if (prediction.Evaluations.Any(evaluation => evaluation.EvaluatedDrawId == draw.Id)) continue;
+
+            var evaluation = BuildPredictionEvaluation(prediction, draw, lottery);
+            prediction.Evaluations.Add(evaluation);
+            db.PredictionEvaluations.Add(evaluation);
+
+            if (prediction.Matches is null)
+                CopyToLegacyFields(prediction, evaluation);
         }
+    }
+
+    private static void UpdatePredictionEvaluations(
+        IEnumerable<Prediction> predictions,
+        Draw draw,
+        LotteryProfile lottery)
+    {
+        foreach (var prediction in predictions)
+        {
+            var existing = prediction.Evaluations.Single(evaluation => evaluation.EvaluatedDrawId == draw.Id);
+            var updated = BuildPredictionEvaluation(prediction, draw, lottery);
+            existing.ActualNumbersCsv = updated.ActualNumbersCsv;
+            existing.Matches = updated.Matches;
+            existing.BonusMatches = updated.BonusMatches;
+            existing.ActualLuckyStarsCsv = updated.ActualLuckyStarsCsv;
+            existing.LuckyStarMatches = updated.LuckyStarMatches;
+            existing.EvaluatedUtc = updated.EvaluatedUtc;
+
+            if (prediction.EvaluatedDrawId == draw.Id)
+                CopyToLegacyFields(prediction, existing);
+        }
+    }
+
+    private static PredictionEvaluation BuildPredictionEvaluation(
+        Prediction prediction,
+        Draw draw,
+        LotteryProfile lottery)
+    {
+        var predicted = prediction.Numbers();
+        var actual = draw.Numbers();
+        var actualBonusNumbers = draw.BonusNumbers();
+        var isUkLotto = lottery == LotteryProfile.UkLotto;
+        return new PredictionEvaluation
+        {
+            PredictionId = prediction.Id,
+            EvaluatedDrawId = draw.Id,
+            EvaluatedDraw = draw,
+            ActualNumbersCsv = string.Join(",", actual),
+            Matches = Backtester.CountMatches(predicted, actual),
+            BonusMatches = isUkLotto
+                ? actualBonusNumbers.Count(predicted.Contains)
+                : null,
+            ActualLuckyStarsCsv = isUkLotto ? null : string.Join(",", actualBonusNumbers),
+            LuckyStarMatches = isUkLotto
+                ? null
+                : Backtester.CountMatches(prediction.LuckyStars(), actualBonusNumbers),
+            EvaluatedUtc = DateTime.UtcNow,
+        };
+    }
+
+    private static void CopyToLegacyFields(Prediction prediction, PredictionEvaluation evaluation)
+    {
+        prediction.ActualNumbersCsv = evaluation.ActualNumbersCsv;
+        prediction.Matches = evaluation.Matches;
+        prediction.ActualLuckyStarsCsv = evaluation.ActualLuckyStarsCsv;
+        prediction.LuckyStarMatches = evaluation.LuckyStarMatches;
+        prediction.EvaluatedDrawId = evaluation.EvaluatedDrawId;
+        prediction.EvaluatedUtc = evaluation.EvaluatedUtc;
     }
 
     internal static DrawDto ToDto(Draw d) => new(

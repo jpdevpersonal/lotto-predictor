@@ -12,13 +12,24 @@ public record DrawDto(
     string BallSet,
     string Source);
 
-public record AddDrawRequest(int[] Numbers, int? Bonus = null, int[]? LuckyStars = null);
+public record AddDrawRequest(
+    int[] Numbers, int? Bonus = null, int[]? LuckyStars = null, int? DrawNumber = null, string? Date = null);
 
 public record GeneratePredictionRequest(bool ExcludeLastDrawNumbers = false);
 
-public record AddDrawRoundsRequest(int[][] Rounds, int?[]? Bonuses = null, int[][]? LuckyStars = null);
+public record AddDrawRoundsRequest(
+    int[][] Rounds,
+    int?[]? Bonuses = null,
+    int[][]? LuckyStars = null,
+    int? DrawNumber = null,
+    string? Date = null);
 
-public record UpdateDrawRequest(int[] Numbers, int? Bonus = null, int[]? LuckyStars = null);
+public record UpdateDrawRequest(
+    int[] Numbers,
+    int? Bonus = null,
+    int[]? LuckyStars = null,
+    int? DrawNumber = null,
+    string? Date = null);
 
 public record DrawHistoryDto(
     IReadOnlyList<DrawDto> Items,
@@ -39,6 +50,18 @@ public record NumberExplanationDto(
     double GapRatio,
     double ModelScore);
 
+public record PredictionEvaluationDto(
+    int EvaluatedDrawId,
+    int DrawNumber,
+    int Round,
+    int[] ActualNumbers,
+    int Matches,
+    int? Bonus,
+    int? BonusMatches,
+    int[] ActualLuckyStars,
+    int? LuckyStarMatches,
+    DateTime EvaluatedUtc);
+
 public record PredictionDto(
     int Id,
     DateTime CreatedUtc,
@@ -52,6 +75,7 @@ public record PredictionDto(
     int? Matches,
     int[]? ActualLuckyStars,
     int? LuckyStarMatches,
+    IReadOnlyList<PredictionEvaluationDto> Evaluations,
     IReadOnlyList<NumberExplanationDto>? Explanation);
 
 public record PredictionLineDto(int Rank, int[] Numbers, int[] LuckyStars, double Score);
@@ -147,6 +171,8 @@ public record PerformancePointDto(
 
 public record LearningDto(
     int Generation,
+    int AnalyzedDrawCount,
+    DateTime? RefreshedUtc,
     string ActiveStrategyName,
     string ActiveWeights,
     bool ActiveIsLearned,

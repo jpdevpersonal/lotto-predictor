@@ -25,6 +25,7 @@ public class Prediction
     public int? LuckyStarMatches { get; set; }
     public int? EvaluatedDrawId { get; set; }
     public DateTime? EvaluatedUtc { get; set; }
+    public ICollection<PredictionEvaluation> Evaluations { get; set; } = [];
 
     public int[] Numbers() => P6.HasValue
         ? [P1, P2, P3, P4, P5, P6.Value]

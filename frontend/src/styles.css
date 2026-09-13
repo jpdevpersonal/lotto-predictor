@@ -655,6 +655,21 @@ tr.baseline {
   box-shadow: 0 0 0 2px rgba(74, 93, 163, 0.16);
 }
 
+.compact-text-input {
+  width: 8rem;
+  height: 2.25rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+}
+
+.compact-text-input:focus {
+  outline: none;
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 2px rgba(74, 93, 163, 0.16);
+}
+
 .inline-actions button {
   padding: 0.45rem 0.7rem;
 }

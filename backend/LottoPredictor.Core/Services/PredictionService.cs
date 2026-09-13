@@ -173,6 +173,8 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
     {
         await using var db = await contextFactory.CreateDbContextAsync(ct);
         var prediction = await db.Predictions.AsNoTracking()
+            .Include(item => item.Evaluations)
+            .ThenInclude(evaluation => evaluation.EvaluatedDraw)
             .OrderByDescending(p => p.Id)
             .FirstOrDefaultAsync(ct);
         if (prediction is null) return null;
@@ -183,6 +185,8 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
     {
         await using var db = await contextFactory.CreateDbContextAsync(ct);
         var predictions = await db.Predictions.AsNoTracking()
+            .Include(prediction => prediction.Evaluations)
+            .ThenInclude(evaluation => evaluation.EvaluatedDraw)
             .OrderByDescending(p => p.Id)
             .Take(Math.Clamp(limit, 1, 500))
             .ToListAsync(ct);
@@ -232,5 +236,31 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         p.Matches,
         p.ActualLuckyStarsCsv?.Split(',').Select(int.Parse).ToArray(),
         p.LuckyStarMatches,
+        ToEvaluationDtos(p),
         explanation);
+
+    private static IReadOnlyList<PredictionEvaluationDto> ToEvaluationDtos(Prediction prediction)
+    {
+        if (prediction.Evaluations.Count == 0)
+            return [];
+
+        return prediction.Evaluations
+            .OrderBy(evaluation => evaluation.EvaluatedDraw.Sequence)
+            .Select(evaluation => new PredictionEvaluationDto(
+                evaluation.EvaluatedDrawId,
+                evaluation.EvaluatedDraw.DrawNumber,
+                prediction.Evaluations.Count(other =>
+                    other.EvaluatedDraw.DrawNumber == evaluation.EvaluatedDraw.DrawNumber &&
+                    other.EvaluatedDraw.Sequence <= evaluation.EvaluatedDraw.Sequence),
+                evaluation.ActualNumbersCsv.Split(',').Select(int.Parse).ToArray(),
+                evaluation.Matches,
+                evaluation.EvaluatedDraw.Bonus,
+                evaluation.BonusMatches,
+                string.IsNullOrWhiteSpace(evaluation.ActualLuckyStarsCsv)
+                    ? []
+                    : evaluation.ActualLuckyStarsCsv.Split(',').Select(int.Parse).ToArray(),
+                evaluation.LuckyStarMatches,
+                evaluation.EvaluatedUtc))
+            .ToList();
+    }
 }

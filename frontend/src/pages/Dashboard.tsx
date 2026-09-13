@@ -385,7 +385,12 @@ export default function Dashboard({
         <section>
           <h2>Learning</h2>
           <p className="muted">
-            Generation <strong>{learning.generation}</strong>: each new draw
+            Generation <strong>{learning.generation}</strong> across{" "}
+            <strong>{learning.analyzedDrawCount} draws</strong>
+            {learning.refreshedUtc
+              ? `, refreshed ${learning.refreshedUtc.replace("T", " ").slice(0, 16)} UTC`
+              : ""}
+            : each new draw
             triggers one genetic-optimizer generation — elite weight sets are
             mutated, crossed over, and challenged by random immigrants, all
             judged by the same walk-forward backtest. An online hedge ensemble
@@ -521,16 +526,34 @@ export default function Dashboard({
                   <td>#{p.cutoffDrawNumber}</td>
                   <td>{p.modelVersion}</td>
                   <td>
-                    {p.actualNumbers ? p.actualNumbers.join(" ") : "—"}
-                    {p.actualLuckyStars?.length
-                      ? ` + ${p.actualLuckyStars.join(" ")}`
-                      : ""}
+                    {p.evaluations.length > 0
+                      ? p.evaluations.map((evaluation) => (
+                          <div key={evaluation.evaluatedDrawId}>
+                            Round {evaluation.round}: {evaluation.actualNumbers.join(" ")}
+                            {evaluation.bonus != null ? ` + bonus ${evaluation.bonus}` : ""}
+                            {evaluation.actualLuckyStars.length > 0
+                              ? ` + stars ${evaluation.actualLuckyStars.join(" ")}`
+                              : ""}
+                          </div>
+                        ))
+                      : p.actualNumbers
+                        ? p.actualNumbers.join(" ")
+                        : "—"}
                   </td>
                   <td>
-                    {p.matches ?? "pending"}
-                    {p.luckyStarMatches != null
-                      ? ` + ${p.luckyStarMatches} stars`
-                      : ""}
+                    {p.evaluations.length > 0
+                      ? p.evaluations.map((evaluation) => (
+                          <div key={evaluation.evaluatedDrawId}>
+                            Round {evaluation.round}: {evaluation.matches} main
+                            {evaluation.bonusMatches
+                              ? ` + ${evaluation.bonusMatches} bonus`
+                              : ""}
+                            {evaluation.luckyStarMatches != null
+                              ? ` + ${evaluation.luckyStarMatches} stars`
+                              : ""}
+                          </div>
+                        ))
+                      : p.matches ?? "pending"}
                   </td>
                 </tr>
               ))}

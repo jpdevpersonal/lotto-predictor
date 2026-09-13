@@ -14,9 +14,22 @@ public class LearningService(IDbContextFactory<LottoDbContext> contextFactory, I
 {
     public async Task<LearningDto> GetLearningAsync(int historyLimit = 500, CancellationToken ct = default)
     {
+        await using var db = await contextFactory.CreateDbContextAsync(ct);
+        if (!await db.Draws.AnyAsync(ct))
+            return new LearningDto(
+                0,
+                0,
+                null,
+                "Waiting for draw history",
+                "Add or import draw history to start learning.",
+                false,
+                new UniformityDto(0, 0, 1, 0, "Not enough draws for a uniformity test."),
+                [],
+                [],
+                []);
+
         var snapshot = await analysis.GetSnapshotAsync(ct);
 
-        await using var db = await contextFactory.CreateDbContextAsync(ct);
         var learned = await db.LearnedStrategies.AsNoTracking()
             .OrderByDescending(s => s.RecencyWeightedAvg)
             .ToListAsync(ct);
@@ -45,6 +58,8 @@ public class LearningService(IDbContextFactory<LottoDbContext> contextFactory, I
 
         return new LearningDto(
             snapshot.LearningGeneration,
+            snapshot.Draws.Count,
+            history.Count == 0 ? null : history.Max(point => point.LoggedUtc),
             active.Name,
             active.Name == Analysis.Backtester.EnsembleName
                 ? "online multiplicative-weights blend of all strategies"

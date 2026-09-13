@@ -50,11 +50,13 @@ export const api = {
     rounds: number[][],
     bonuses: (number | null)[],
     luckyStars: number[][] = [],
+    drawNumber: number | null = null,
+    date: string | null = null,
   ) =>
     request<DrawDto[]>("/api/draws/rounds", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rounds, bonuses, luckyStars }),
+      body: JSON.stringify({ rounds, bonuses, luckyStars, drawNumber, date }),
     }),
   addLatestRound: (numbers: number[], bonus: number | null = null) =>
     request<DrawDto>("/api/draws/latest/round", {
@@ -67,11 +69,13 @@ export const api = {
     numbers: number[],
     bonus: number | null,
     luckyStars: number[] = [],
+    drawNumber: number | null = null,
+    date: string | null = null,
   ) =>
     request<DrawDto>(`/api/draws/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ numbers, bonus, luckyStars }),
+      body: JSON.stringify({ numbers, bonus, luckyStars, drawNumber, date }),
     }),
   latestPrediction: () =>
     request<PredictionDto | null>("/api/predictions/latest"),

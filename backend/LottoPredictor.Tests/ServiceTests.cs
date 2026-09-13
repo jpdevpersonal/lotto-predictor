@@ -277,21 +277,71 @@ public sealed class ServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Adding_two_rounds_evaluates_pending_prediction_against_first_round()
+    public async Task Adding_two_rounds_records_each_round_and_uk_bonus_match()
+    {
+        SeedDraws(200);
+        using (var db = _factory.CreateDbContext())
+        {
+            var prediction = new Prediction
+            {
+                CreatedUtc = DateTime.UtcNow,
+                CutoffSequence = 200,
+                CutoffDrawNumber = 200,
+                ModelVersion = "test",
+                StrategyName = "test",
+            };
+            prediction.SetNumbers([14, 22, 31, 38, 45, 54]);
+            db.Predictions.Add(prediction);
+            db.SaveChanges();
+        }
+
+        await _drawService.AddDrawRoundsAsync(new AddDrawRoundsRequest(
+            [[2, 32, 35, 44, 48, 56], [10, 12, 29, 31, 36, 54]], [26, 22]));
+
+        await using var verificationDb = _factory.CreateDbContext();
+        var evaluations = await verificationDb.PredictionEvaluations
+            .Include(evaluation => evaluation.EvaluatedDraw)
+            .OrderBy(evaluation => evaluation.EvaluatedDraw.Sequence)
+            .ToListAsync();
+        Assert.Collection(evaluations,
+            first =>
+            {
+                Assert.Equal(0, first.Matches);
+                Assert.Equal(0, first.BonusMatches);
+            },
+            second =>
+            {
+                Assert.Equal(2, second.Matches);
+                Assert.Equal(1, second.BonusMatches);
+            });
+        Assert.Equal(202, (await _analysis.GetSnapshotAsync()).Draws.Count);
+    }
+
+    [Fact]
+    public async Task Adding_latest_round_preserves_first_round_evaluation()
     {
         SeedDraws(200);
         var prediction = await _predictionService.GenerateAsync();
         var predicted = prediction.Numbers;
-        var nonPredicted = Enumerable.Range(1, 59).Except(predicted).ToArray();
-        var firstRound = predicted.Take(2).Concat(nonPredicted.Take(4)).ToArray();
-        var secondRound = predicted.Take(5).Concat(nonPredicted.Skip(4).Take(1)).ToArray();
+        var other = Enumerable.Range(1, 59).Except(predicted).ToArray();
+        var firstRound = predicted.Take(1).Concat(other.Take(5)).ToArray();
+        var secondRound = predicted.Take(3).Concat(other.Skip(5).Take(3)).ToArray();
 
-        await _drawService.AddDrawRoundsAsync(new AddDrawRoundsRequest([firstRound, secondRound]));
+        await _drawService.AddDrawAsync(new AddDrawRequest(firstRound, other[10]));
+        await _drawService.AddLatestRoundAsync(new AddDrawRequest(secondRound, predicted[5]));
 
-        var evaluated = (await _predictionService.GetHistoryAsync()).Single(p => p.Id == prediction.Id);
-        Assert.Equal(2, evaluated.Matches);
-        Assert.Equal(firstRound.OrderBy(number => number), evaluated.ActualNumbers);
-        Assert.Equal(202, (await _analysis.GetSnapshotAsync()).Draws.Count);
+        var evaluated = (await _predictionService.GetHistoryAsync()).Single(item => item.Id == prediction.Id);
+        Assert.Collection(evaluated.Evaluations,
+            first =>
+            {
+                Assert.Equal(1, first.Matches);
+                Assert.Equal(0, first.BonusMatches);
+            },
+            second =>
+            {
+                Assert.Equal(3, second.Matches);
+                Assert.Equal(1, second.BonusMatches);
+            });
     }
 
     [Fact]
@@ -310,6 +360,26 @@ public sealed class ServiceTests : IDisposable
         Assert.Equal(4, evaluated.Matches);
         Assert.Equal(corrected.OrderBy(number => number), evaluated.ActualNumbers);
         Assert.Equal(201, (await _analysis.GetSnapshotAsync()).Draws.Count);
+    }
+
+    [Fact]
+    public async Task Correcting_one_round_does_not_change_the_other_evaluation()
+    {
+        SeedDraws(200);
+        var prediction = await _predictionService.GenerateAsync();
+        var predicted = prediction.Numbers;
+        var other = Enumerable.Range(1, 59).Except(predicted).ToArray();
+        var added = await _drawService.AddDrawRoundsAsync(new AddDrawRoundsRequest(
+            [predicted.Take(1).Concat(other.Take(5)).ToArray(),
+             predicted.Take(2).Concat(other.Skip(5).Take(4)).ToArray()]));
+
+        var corrected = predicted.Take(4).Concat(other.Skip(9).Take(2)).ToArray();
+        await _drawService.UpdateDrawAsync(added[0].Id, new UpdateDrawRequest(corrected));
+
+        var evaluated = (await _predictionService.GetHistoryAsync()).Single(item => item.Id == prediction.Id);
+        Assert.Collection(evaluated.Evaluations,
+            first => Assert.Equal(4, first.Matches),
+            second => Assert.Equal(2, second.Matches));
     }
 
     [Fact]
