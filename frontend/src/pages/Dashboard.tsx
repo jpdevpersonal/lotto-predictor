@@ -532,7 +532,7 @@ export default function Dashboard({
                             Round {evaluation.round}: {evaluation.actualNumbers.join(" ")}
                             {evaluation.bonus != null ? ` + bonus ${evaluation.bonus}` : ""}
                             {evaluation.actualLuckyStars.length > 0
-                              ? ` + stars ${evaluation.actualLuckyStars.join(" ")}`
+                              ? ` + ${lottery.bonusLabel.toLowerCase()}s ${evaluation.actualLuckyStars.join(" ")}`
                               : ""}
                           </div>
                         ))
@@ -549,7 +549,7 @@ export default function Dashboard({
                               ? ` + ${evaluation.bonusMatches} bonus`
                               : ""}
                             {evaluation.luckyStarMatches != null
-                              ? ` + ${evaluation.luckyStarMatches} stars`
+                              ? ` + ${evaluation.luckyStarMatches} ${lottery.bonusLabel.toLowerCase()}s`
                               : ""}
                           </div>
                         ))

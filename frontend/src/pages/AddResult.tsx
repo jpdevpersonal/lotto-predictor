@@ -77,7 +77,9 @@ export default function AddResult({
         round.some((number) => Number.isNaN(number)),
       )
     ) {
-      setError("Please enter both Lucky Stars.");
+      setError(
+        `Please enter all ${lottery.luckyStarCount} ${lottery.bonusLabel}${lottery.luckyStarCount > 1 ? "s" : ""}.`,
+      );
       return;
     }
     setSaving(true);
@@ -152,8 +154,8 @@ export default function AddResult({
                       min={1}
                       max={lottery.luckyStarPoolSize}
                       value={value}
-                      aria-label={`Lucky Star ${starIndex + 1}`}
-                      placeholder={`Star ${starIndex + 1}`}
+                      aria-label={`${lottery.bonusLabel} ${starIndex + 1}`}
+                      placeholder={`${lottery.bonusLabel} ${starIndex + 1}`}
                       onChange={(event) =>
                         setLuckyStars((current) =>
                           current.map((stars, index) =>

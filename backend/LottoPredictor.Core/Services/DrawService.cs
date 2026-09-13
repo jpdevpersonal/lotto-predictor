@@ -199,7 +199,7 @@ public class DrawService : IDrawService
             ?? throw new KeyNotFoundException($"Draw {id} was not found.");
         draw.SetNumbers(request.Numbers);
         draw.Bonus = request.Bonus;
-        if (lottery == LotteryProfile.UkLotto)
+        if (lottery.BonusSharesMainPool)
             draw.Bonus2 = null;
         SetLuckyStars(draw, request.LuckyStars);
         if (request.DrawNumber.HasValue)
@@ -289,7 +289,7 @@ public class DrawService : IDrawService
     {
         var errors = NumberValidator.Validate(
             numbers, lottery.MainPoolSize, lottery.MainNumberCount).ToList();
-        if (lottery == LotteryProfile.UkLotto)
+        if (lottery.BonusSharesMainPool)
         {
             if (bonus is < 1 || bonus > lottery.BonusPoolSize)
                 errors.Add($"Bonus ball must be between 1 and {lottery.BonusPoolSize}.");
@@ -365,7 +365,7 @@ public class DrawService : IDrawService
         var predicted = prediction.Numbers();
         var actual = draw.Numbers();
         var actualBonusNumbers = draw.BonusNumbers();
-        var isUkLotto = lottery == LotteryProfile.UkLotto;
+        var isUkLotto = lottery.BonusSharesMainPool;
         return new PredictionEvaluation
         {
             PredictionId = prediction.Id,

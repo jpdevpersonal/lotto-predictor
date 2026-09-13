@@ -1,4 +1,4 @@
-export type LotteryKey = "uk-lotto" | "euromillions";
+export type LotteryKey = "uk-lotto" | "euromillions" | "set-for-life";
 
 export interface LotteryProfile {
   key: LotteryKey;
@@ -8,6 +8,8 @@ export interface LotteryProfile {
   luckyStarCount: number;
   luckyStarPoolSize: number;
   roundCount: number;
+  /** Label for the bonus/lucky star/life ball input(s), e.g. "Bonus", "Lucky Star", "Life Ball". */
+  bonusLabel: string;
 }
 
 export const LOTTERIES: Record<LotteryKey, LotteryProfile> = {
@@ -19,6 +21,7 @@ export const LOTTERIES: Record<LotteryKey, LotteryProfile> = {
     luckyStarCount: 0,
     luckyStarPoolSize: 0,
     roundCount: 2,
+    bonusLabel: "Bonus",
   },
   euromillions: {
     key: "euromillions",
@@ -28,6 +31,17 @@ export const LOTTERIES: Record<LotteryKey, LotteryProfile> = {
     luckyStarCount: 2,
     luckyStarPoolSize: 12,
     roundCount: 1,
+    bonusLabel: "Lucky Star",
+  },
+  "set-for-life": {
+    key: "set-for-life",
+    name: "Set For Life",
+    mainNumberCount: 5,
+    mainPoolSize: 47,
+    luckyStarCount: 1,
+    luckyStarPoolSize: 10,
+    roundCount: 1,
+    bonusLabel: "Life Ball",
   },
 };
 

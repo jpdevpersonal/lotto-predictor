@@ -82,12 +82,12 @@ public class AnalysisService : IAnalysisService
 
             var events = draws
                 .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(),
-                    lottery == LotteryProfile.UkLotto ? d.Bonus : null))
+                    lottery.BonusSharesMainPool ? d.Bonus : null))
                 .ToList();
 
             var features = FeatureCalculator.Compute(
                 events, lottery.MainPoolSize, lottery.MainPoolExpansionDate);
-            var luckyStarEvents = lottery == LotteryProfile.EuroMillions
+            var luckyStarEvents = !lottery.BonusSharesMainPool
                 ? draws.Select(d => new DrawEvent(
                     d.Sequence, d.DrawNumber, d.Date, d.BonusNumbers())).ToList()
                 : null;
@@ -125,7 +125,7 @@ public class AnalysisService : IAnalysisService
                 Draws = events,
                 Features = features,
                 LuckyStarFeatures = luckyStarFeatures,
-                LatestLuckyStars = lottery == LotteryProfile.EuroMillions
+                LatestLuckyStars = !lottery.BonusSharesMainPool
                     ? draws[^1].BonusNumbers()
                     : [],
                 Lottery = lottery,

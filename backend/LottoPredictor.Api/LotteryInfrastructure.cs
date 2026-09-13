@@ -28,5 +28,7 @@ public sealed class LotteryDbContextFactory(
     public static string DatabasePath(string contentRootPath, LotteryProfile profile) =>
         Path.Combine(contentRootPath, profile == LotteryProfile.EuroMillions
             ? "euromillions.db"
-            : "lotto.db");
+            : profile == LotteryProfile.SetForLife
+                ? "set_for_life.db"
+                : "lotto.db");
 }

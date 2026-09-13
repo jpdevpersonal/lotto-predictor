@@ -35,6 +35,7 @@ export default function App() {
             >
               <option value="uk-lotto">UK National Lottery</option>
               <option value="euromillions">EuroMillions</option>
+              <option value="set-for-life">Set For Life</option>
             </select>
           </label>
           <nav className="nav-pill">
