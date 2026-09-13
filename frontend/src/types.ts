@@ -65,6 +65,19 @@ export interface NumberExplanationDto {
   modelScore: number;
 }
 
+export interface PredictionEvaluationDto {
+  evaluatedDrawId: number;
+  drawNumber: number;
+  round: number;
+  actualNumbers: number[];
+  matches: number;
+  bonus: number | null;
+  bonusMatches: number | null;
+  actualLuckyStars: number[];
+  luckyStarMatches: number | null;
+  evaluatedUtc: string;
+}
+
 export interface PredictionDto {
   id: number;
   createdUtc: string;
@@ -78,6 +91,7 @@ export interface PredictionDto {
   matches: number | null;
   actualLuckyStars: number[] | null;
   luckyStarMatches: number | null;
+  evaluations: PredictionEvaluationDto[];
   explanation: NumberExplanationDto[] | null;
 }
 
@@ -175,6 +189,8 @@ export interface HedgeWeightDto {
 
 export interface LearningDto {
   generation: number;
+  analyzedDrawCount: number;
+  refreshedUtc: string | null;
   activeStrategyName: string;
   activeWeights: string;
   activeIsLearned: boolean;

@@ -11,6 +11,10 @@ export default function AddResult({
   lottery: LotteryProfile;
   onDone: () => void;
 }) {
+  const [drawNumber, setDrawNumber] = useState("");
+  const [date, setDate] = useState(() =>
+    new Date().toISOString().slice(0, 10),
+  );
   const [rounds, setRounds] = useState<string[][]>(() =>
     Array.from({ length: lottery.roundCount }, () =>
       emptyValues(lottery.mainNumberCount),
@@ -48,6 +52,16 @@ export default function AddResult({
       );
       return;
     }
+    const parsedDrawNumber =
+      drawNumber.trim() === "" ? null : parseInt(drawNumber, 10);
+    if (drawNumber.trim() !== "" && Number.isNaN(parsedDrawNumber)) {
+      setError("Draw number must be a valid number.");
+      return;
+    }
+    if (!date) {
+      setError("Please enter the draw date.");
+      return;
+    }
     const parsedBonuses = bonuses.map((value) =>
       value.trim() === "" ? null : parseInt(value, 10),
     );
@@ -68,7 +82,13 @@ export default function AddResult({
     }
     setSaving(true);
     try {
-      await api.addDrawRounds(numbers, parsedBonuses, parsedStars);
+      await api.addDrawRounds(
+        numbers,
+        parsedBonuses,
+        parsedStars,
+        parsedDrawNumber,
+        date,
+      );
       onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save result");
@@ -86,6 +106,25 @@ export default function AddResult({
         backtesting are recomputed after saving.
       </p>
       <div className="rounds-input">
+        <fieldset className="round-input">
+          <legend>Draw Details</legend>
+          <div className="number-inputs">
+            <input
+              type="number"
+              min={1}
+              value={drawNumber}
+              aria-label="Draw number"
+              placeholder="Draw # (auto if blank)"
+              onChange={(event) => setDrawNumber(event.target.value)}
+            />
+            <input
+              type="date"
+              value={date}
+              aria-label="Draw date"
+              onChange={(event) => setDate(event.target.value)}
+            />
+          </div>
+        </fieldset>
         {rounds.map((round, roundIndex) => (
           <fieldset className="round-input" key={roundIndex}>
             <legend>Round {roundIndex + 1}</legend>

@@ -16,13 +16,17 @@ public class PredictionsController(IPredictionService predictions) : ControllerB
     }
 
     [HttpPost("generate")]
-    public async Task<ActionResult<PredictionDto>> Generate(CancellationToken ct = default)
-        => Ok(await predictions.GenerateAsync(ct));
+    public async Task<ActionResult<PredictionDto>> Generate(
+        [FromBody] GeneratePredictionRequest? request,
+        CancellationToken ct = default)
+        => Ok(await predictions.GenerateAsync(request?.ExcludeLastDrawNumbers ?? false, ct));
 
     [HttpGet("lines")]
     public async Task<ActionResult<PredictionLinesDto>> GetLines(
-        [FromQuery] int count = 50, CancellationToken ct = default)
-        => Ok(await predictions.GenerateLinesAsync(count, ct));
+        [FromQuery] int count = 50,
+        [FromQuery] bool excludeLastDrawNumbers = false,
+        CancellationToken ct = default)
+        => Ok(await predictions.GenerateLinesAsync(count, excludeLastDrawNumbers, ct));
 
     [HttpGet("lines/best")]
     public async Task<ActionResult<BestOfLinesDto>> GetBestOfLines(

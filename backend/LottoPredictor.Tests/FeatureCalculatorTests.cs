@@ -30,6 +30,25 @@ public class FeatureCalculatorTests
     }
 
     [Fact]
+    public void Short_history_counts_each_distinct_recent_window_once()
+    {
+        var draws = Enumerable.Range(1, 20)
+            .Select(i => i >= 16
+                ? Ev(i, 7, 20, 21, 22, 23, 24)
+                : Ev(i, 10, 20, 21, 22, 23, 24))
+            .ToList();
+
+        var feature = FeatureCalculator.Compute(
+            draws, configuredPoolSize: 59, poolExpansionDate: new DateOnly(2015, 10, 10)).For(7);
+        double fairRate = 6.0 / 59.0;
+        double expectedRecentRate = (5.0 / 10.0 + 5.0 / 20.0) / 2.0;
+        double expectedShrunk = ((5 + 20 * fairRate) / 30.0 + (5 + 20 * fairRate) / 40.0) / 2.0;
+
+        Assert.Equal(expectedRecentRate, feature.RecentRate, 10);
+        Assert.Equal(expectedShrunk, feature.RecentRateShrunk, 10);
+    }
+
+    [Fact]
     public void Computes_draws_since_last_and_average_gap()
     {
         // Number 7 in draws 1, 3, 12 -> gaps 2 and 9, avg 5.5; last seen at draw 12 of 15 -> 3 since.
@@ -56,6 +75,29 @@ public class FeatureCalculatorTests
         var f = FeatureCalculator.Compute(draws).For(30);
         Assert.Equal(0, f.TotalCount);
         Assert.Equal(20, f.DrawsSinceLast);
+    }
+
+    [Fact]
+    public void Configured_pool_keeps_legal_unobserved_numbers_eligible()
+    {
+        var draws = Enumerable.Range(1, 20)
+            .Select(i => Ev(i, 1, 2, 3, 4, 5, 48)).ToList();
+
+        var fs = FeatureCalculator.Compute(
+            draws, configuredPoolSize: 59, poolExpansionDate: new DateOnly(2015, 10, 10));
+
+        Assert.Equal(59, fs.Pool.PoolSize);
+        Assert.Equal(20, fs.For(59).EligibleDraws);
+        Assert.Equal(0, fs.For(59).TotalCount);
+    }
+
+    [Fact]
+    public void Configured_pool_rejects_observed_numbers_outside_it()
+    {
+        var draws = new List<DrawEvent> { Ev(1, 1, 2, 3, 4, 5, 50) };
+
+        Assert.Throws<InvalidOperationException>(() =>
+            FeatureCalculator.Compute(draws, configuredPoolSize: 49));
     }
 
     [Fact]

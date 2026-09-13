@@ -51,6 +51,7 @@ export default function Dashboard({
   const [linesLoading, setLinesLoading] = useState(false);
   const [bestOf, setBestOf] = useState<BestOfLinesDto | null>(null);
   const [bestLoading, setBestLoading] = useState(false);
+  const [excludeLastDrawNumbers, setExcludeLastDrawNumbers] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -79,7 +80,7 @@ export default function Dashboard({
   const generate = async () => {
     setGenerating(true);
     try {
-      setPrediction(await api.generatePrediction());
+      setPrediction(await api.generatePrediction(excludeLastDrawNumbers));
       setHistory(await api.predictionHistory());
       setError("");
     } catch (e) {
@@ -95,7 +96,7 @@ export default function Dashboard({
     setLinesLoading(true);
     setBestOf(null);
     try {
-      setLines(await api.predictionLines(50));
+      setLines(await api.predictionLines(50, excludeLastDrawNumbers));
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to generate lines");
@@ -186,6 +187,16 @@ export default function Dashboard({
         )}
 
         <div className="actions">
+          <label className="prediction-option">
+            <input
+              type="checkbox"
+              checked={excludeLastDrawNumbers}
+              onChange={(event) =>
+                setExcludeLastDrawNumbers(event.target.checked)
+              }
+            />
+            Exclude last draw numbers from this prediction
+          </label>
           <button onClick={generate} disabled={generating}>
             {generating ? "Generating…" : "Generate Prediction"}
           </button>
@@ -374,7 +385,12 @@ export default function Dashboard({
         <section>
           <h2>Learning</h2>
           <p className="muted">
-            Generation <strong>{learning.generation}</strong>: each new draw
+            Generation <strong>{learning.generation}</strong> across{" "}
+            <strong>{learning.analyzedDrawCount} draws</strong>
+            {learning.refreshedUtc
+              ? `, refreshed ${learning.refreshedUtc.replace("T", " ").slice(0, 16)} UTC`
+              : ""}
+            : each new draw
             triggers one genetic-optimizer generation — elite weight sets are
             mutated, crossed over, and challenged by random immigrants, all
             judged by the same walk-forward backtest. An online hedge ensemble
@@ -510,16 +526,34 @@ export default function Dashboard({
                   <td>#{p.cutoffDrawNumber}</td>
                   <td>{p.modelVersion}</td>
                   <td>
-                    {p.actualNumbers ? p.actualNumbers.join(" ") : "—"}
-                    {p.actualLuckyStars?.length
-                      ? ` + ${p.actualLuckyStars.join(" ")}`
-                      : ""}
+                    {p.evaluations.length > 0
+                      ? p.evaluations.map((evaluation) => (
+                          <div key={evaluation.evaluatedDrawId}>
+                            Round {evaluation.round}: {evaluation.actualNumbers.join(" ")}
+                            {evaluation.bonus != null ? ` + bonus ${evaluation.bonus}` : ""}
+                            {evaluation.actualLuckyStars.length > 0
+                              ? ` + stars ${evaluation.actualLuckyStars.join(" ")}`
+                              : ""}
+                          </div>
+                        ))
+                      : p.actualNumbers
+                        ? p.actualNumbers.join(" ")
+                        : "—"}
                   </td>
                   <td>
-                    {p.matches ?? "pending"}
-                    {p.luckyStarMatches != null
-                      ? ` + ${p.luckyStarMatches} stars`
-                      : ""}
+                    {p.evaluations.length > 0
+                      ? p.evaluations.map((evaluation) => (
+                          <div key={evaluation.evaluatedDrawId}>
+                            Round {evaluation.round}: {evaluation.matches} main
+                            {evaluation.bonusMatches
+                              ? ` + ${evaluation.bonusMatches} bonus`
+                              : ""}
+                            {evaluation.luckyStarMatches != null
+                              ? ` + ${evaluation.luckyStarMatches} stars`
+                              : ""}
+                          </div>
+                        ))
+                      : p.matches ?? "pending"}
                   </td>
                 </tr>
               ))}

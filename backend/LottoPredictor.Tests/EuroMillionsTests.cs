@@ -1,6 +1,7 @@
 using LottoPredictor.Core.Analysis;
 using LottoPredictor.Core.Data;
 using LottoPredictor.Core.Dtos;
+using LottoPredictor.Core.Models;
 using LottoPredictor.Core.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -8,6 +9,36 @@ namespace LottoPredictor.Tests;
 
 public class EuroMillionsTests
 {
+    [Fact]
+    public void Csv_importer_parses_human_readable_euromillions_export()
+    {
+        const string csv = """
+            Draw Date,Draw Day,Main Number 1,Main Number 2,Main Number 3,Main Number 4,Main Number 5,Lucky Star 1,Lucky Star 2
+            13/02/2004,Friday,16,29,32,36,41,7,9
+            20/02/2004,Friday,7,13,39,47,50,2,5
+            """;
+
+        var draws = new EuroMillionsCsvImporter().Parse(new StringReader(csv));
+
+        Assert.Collection(draws,
+            first =>
+            {
+                Assert.Equal(1, first.Sequence);
+                Assert.Equal(1, first.DrawNumber);
+                Assert.Equal(new DateOnly(2004, 2, 13), first.Date);
+                Assert.Equal([16, 29, 32, 36, 41], first.Numbers());
+                Assert.Equal([7, 9], first.BonusNumbers());
+            },
+            second =>
+            {
+                Assert.Equal(2, second.Sequence);
+                Assert.Equal(2, second.DrawNumber);
+                Assert.Equal(new DateOnly(2004, 2, 20), second.Date);
+                Assert.Equal([7, 13, 39, 47, 50], second.Numbers());
+                Assert.Equal([2, 5], second.BonusNumbers());
+            });
+    }
+
     [Fact]
     public void Prediction_engine_generates_five_main_numbers_and_two_stars()
     {
@@ -83,6 +114,37 @@ public class EuroMillionsTests
     }
 
     [Fact]
+    public async Task Empty_euromillions_database_returns_dashboard_states_instead_of_errors()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"euromillions-test-{Guid.NewGuid():N}.db");
+        try
+        {
+            var factory = new TestDbFactory(path);
+            var selection = new EuroMillionsSelection();
+            var analysis = new NoOpAnalysisService();
+            var draws = new DrawService(factory, analysis, selection);
+            var statistics = new StatisticsService(analysis, draws, selection);
+            var learning = new LearningService(factory, analysis);
+
+            var stats = await statistics.GetStatisticsAsync();
+            var backtesting = await statistics.GetBacktestingAsync();
+            var learningState = await learning.GetLearningAsync();
+
+            Assert.Equal(0, stats.DrawCount);
+            Assert.Equal(50, stats.PoolSize);
+            Assert.Empty(backtesting.Strategies);
+            Assert.Equal("Waiting for draw history", backtesting.ActiveStrategyName);
+            Assert.Equal(0, learningState.AnalyzedDrawCount);
+            Assert.Equal("Waiting for draw history", learningState.ActiveStrategyName);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task Lottery_histories_and_predictions_are_isolated_by_selection()
     {
         string ukPath = Path.Combine(Path.GetTempPath(), $"uk-lotto-test-{Guid.NewGuid():N}.db");
@@ -90,7 +152,7 @@ public class EuroMillionsTests
         try
         {
             var selection = new MutableLotterySelection();
-            var factory = new ProfileDbFactory(selection, ukPath, euroPath);
+            IDbContextFactory<LottoDbContext> factory = new ProfileDbFactory(selection, ukPath, euroPath);
             SeedDraws(factory, TestData.RandomHistory(5, 59));
 
             selection.CurrentProfile = LotteryProfile.EuroMillions;
@@ -145,6 +207,8 @@ public class EuroMillionsTests
                 Sequence = item.Sequence,
                 DrawNumber = item.DrawNumber,
                 Date = item.Date,
+                Bonus = item.Numbers.Length == 5 ? 1 : null,
+                Bonus2 = item.Numbers.Length == 5 ? 2 : null,
                 Source = "test",
             };
             draw.SetNumbers(item.Numbers);

@@ -1,5 +1,3 @@
-lotto.db
-euromillions.db
 *.db-shm
 *.db-wal
 bin/

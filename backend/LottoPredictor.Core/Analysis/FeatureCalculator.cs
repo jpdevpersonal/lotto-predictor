@@ -5,16 +5,34 @@ namespace LottoPredictor.Core.Analysis;
 /// is given, which is what makes walk-forward backtesting leak-free.</summary>
 public static class FeatureCalculator
 {
-    public static FeatureSet Compute(IReadOnlyList<DrawEvent> draws)
+    public static FeatureSet Compute(
+        IReadOnlyList<DrawEvent> draws,
+        int? configuredPoolSize = null,
+        DateOnly? poolExpansionDate = null)
     {
         if (draws.Count == 0) throw new InvalidOperationException("Cannot compute features with no draws.");
 
-        var pool = PoolInfo.Detect(draws);
+        var pool = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
         int p = pool.PoolSize;
         int n = draws.Count;
         int pickCount = draws[0].Numbers.Length;
+        if (pickCount == 0)
+            throw new InvalidOperationException("Draws must contain at least one ball.");
         if (draws.Any(draw => draw.Numbers.Length != pickCount))
             throw new InvalidOperationException("All draws must contain the same number of balls.");
+        for (int i = 0; i < draws.Count; i++)
+        {
+            var numbers = draws[i].Numbers;
+            if (numbers.Any(number => number < 1 || number > p))
+                throw new InvalidOperationException(
+                    $"Draw at sequence {draws[i].Sequence} contains a ball outside pool 1-{p}.");
+            if (numbers.Distinct().Count() != numbers.Length)
+                throw new InvalidOperationException(
+                    $"Draw at sequence {draws[i].Sequence} contains duplicate balls.");
+            if (!numbers.SequenceEqual(numbers.OrderBy(number => number)))
+                throw new InvalidOperationException(
+                    $"Draw at sequence {draws[i].Sequence} must be sorted in ascending order.");
+        }
 
         var occurrences = new List<int>[p + 1];
         var positionCounts = new int[p + 1][];
@@ -65,13 +83,19 @@ public static class FeatureCalculator
 
             int w10 = Math.Min(10, eligible), w25 = Math.Min(25, eligible),
                 w50 = Math.Min(50, eligible), w100 = Math.Min(100, eligible);
-            double recentRate = 0;
-            int parts = 0;
-            if (w10 > 0) { recentRate += (double)c10 / w10; parts++; }
-            if (w25 > 0) { recentRate += (double)c25 / w25; parts++; }
-            if (w50 > 0) { recentRate += (double)c50 / w50; parts++; }
-            if (w100 > 0) { recentRate += (double)c100 / w100; parts++; }
-            recentRate = parts > 0 ? recentRate / parts : 0;
+            var recentWindows = new[]
+                {
+                    (Count: c10, Size: w10),
+                    (Count: c25, Size: w25),
+                    (Count: c50, Size: w50),
+                    (Count: c100, Size: w100),
+                }
+                .Where(window => window.Size > 0)
+                .DistinctBy(window => window.Size)
+                .ToArray();
+            double recentRate = recentWindows.Length > 0
+                ? recentWindows.Average(window => (double)window.Count / window.Size)
+                : 0;
 
             int drawsSinceLast = total == 0 ? eligible : n - 1 - occ[^1];
             double avgGap;
@@ -103,7 +127,10 @@ public static class FeatureCalculator
             double qNow = (double)pickCount / pool.PoolAt(n - 1);
             double qBar = eligible > 0 ? expected / eligible : qNow;
             double freqShrunk = (total + shrink * qBar) / (Math.Max(0, eligible) + shrink);
-            double recentShrunk = (recentRate * w100 + shrink * qNow) / (w100 + shrink);
+            double recentShrunk = recentWindows.Length > 0
+                ? recentWindows.Average(window =>
+                    (window.Count + shrink * qNow) / (window.Size + shrink))
+                : qNow;
             double rate50Shrunk = (c50 + shrink * qNow) / (w50 + shrink);
 
             double bonusPrior = 1.0 / Math.Max(1, p - pickCount);

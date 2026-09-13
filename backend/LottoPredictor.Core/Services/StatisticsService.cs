@@ -9,10 +9,21 @@ public interface IStatisticsService
     Task<BacktestingDto> GetBacktestingAsync(CancellationToken ct = default);
 }
 
-public class StatisticsService(IAnalysisService analysis, IDrawService draws) : IStatisticsService
+public class StatisticsService(
+    IAnalysisService analysis,
+    IDrawService draws,
+    ILotterySelection? lotterySelection = null) : IStatisticsService
 {
     public async Task<StatisticsDto> GetStatisticsAsync(CancellationToken ct = default)
     {
+        if (await draws.CountAsync(ct) == 0)
+        {
+            var lottery = (lotterySelection ?? new DefaultLotterySelection()).Current;
+            return new StatisticsDto(
+                0, lottery.MainPoolSize, null, null, [], [],
+                new SetStatsDto(0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+        }
+
         var snapshot = await analysis.GetSnapshotAsync(ct);
         var fs = snapshot.Features;
         var latest = await draws.GetLatestAsync(ct);
@@ -47,6 +58,11 @@ public class StatisticsService(IAnalysisService analysis, IDrawService draws) : 
 
     public async Task<BacktestingDto> GetBacktestingAsync(CancellationToken ct = default)
     {
+        if (await draws.CountAsync(ct) == 0)
+            return new BacktestingDto(
+                0, 0, [], "Waiting for draw history", 0, 0, 0, 0, 0, 0,
+                "Add or import draw history to start backtesting.");
+
         var snapshot = await analysis.GetSnapshotAsync(ct);
         var report = snapshot.Backtest;
 

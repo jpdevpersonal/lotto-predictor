@@ -98,15 +98,25 @@ public class EuroMillionsCsvImporter : IEuroMillionsCsvImporter
             .Select((header, position) => (header, position))
             .ToDictionary(item => item.header, item => item.position, StringComparer.OrdinalIgnoreCase);
 
-        foreach (var required in new[]
-                 {
-                     "draw_date", "draw_id", "N1", "N2", "N3", "N4", "N5",
-                     "lucky_star_1", "lucky_star_2",
-                 })
+        string Column(params string[] names) => names.FirstOrDefault(index.ContainsKey)
+            ?? throw new InvalidDataException($"CSV is missing required column '{names[0]}'.");
+
+        var dateColumn = Column("draw_date", "Draw Date");
+        var mainNumberColumns = new[]
         {
-            if (!index.ContainsKey(required))
-                throw new InvalidDataException($"CSV is missing required column '{required}'.");
-        }
+            Column("N1", "Main Number 1"),
+            Column("N2", "Main Number 2"),
+            Column("N3", "Main Number 3"),
+            Column("N4", "Main Number 4"),
+            Column("N5", "Main Number 5"),
+        };
+        var luckyStarColumns = new[]
+        {
+            Column("lucky_star_1", "Lucky Star 1"),
+            Column("lucky_star_2", "Lucky Star 2"),
+        };
+        index.TryGetValue("draw_id", out var drawIdIndex);
+        bool hasDrawId = index.ContainsKey("draw_id");
 
         var draws = new List<Draw>();
         string? line;
@@ -123,8 +133,8 @@ public class EuroMillionsCsvImporter : IEuroMillionsCsvImporter
             string Get(string column) => fields[index[column]].Trim();
             int GetInt(string column) => int.Parse(Get(column), CultureInfo.InvariantCulture);
 
-            var numbers = new[] { GetInt("N1"), GetInt("N2"), GetInt("N3"), GetInt("N4"), GetInt("N5") };
-            var stars = new[] { GetInt("lucky_star_1"), GetInt("lucky_star_2") };
+            var numbers = mainNumberColumns.Select(GetInt).ToArray();
+            var stars = luckyStarColumns.Select(GetInt).ToArray();
             if (numbers.Distinct().Count() != numbers.Length)
                 throw new InvalidDataException($"CSV row {rowNumber} contains duplicate main numbers.");
             if (stars.Distinct().Count() != stars.Length)
@@ -132,8 +142,8 @@ public class EuroMillionsCsvImporter : IEuroMillionsCsvImporter
 
             var draw = new Draw
             {
-                DrawNumber = GetInt("draw_id"),
-                Date = DateOnly.ParseExact(Get("draw_date"), "dd/MM/yyyy", CultureInfo.InvariantCulture),
+                DrawNumber = hasDrawId ? int.Parse(fields[drawIdIndex].Trim(), CultureInfo.InvariantCulture) : 0,
+                Date = DateOnly.ParseExact(Get(dateColumn), "dd/MM/yyyy", CultureInfo.InvariantCulture),
                 Bonus = stars.Min(),
                 Bonus2 = stars.Max(),
                 Machine = "EuroMillions",
@@ -144,7 +154,11 @@ public class EuroMillionsCsvImporter : IEuroMillionsCsvImporter
         }
 
         var ordered = draws.OrderBy(draw => draw.Date).ThenBy(draw => draw.DrawNumber).ToList();
-        for (int i = 0; i < ordered.Count; i++) ordered[i].Sequence = i + 1;
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            ordered[i].Sequence = i + 1;
+            if (!hasDrawId) ordered[i].DrawNumber = i + 1;
+        }
         return ordered;
     }
 }

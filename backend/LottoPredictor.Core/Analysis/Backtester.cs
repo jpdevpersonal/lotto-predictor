@@ -38,7 +38,9 @@ public static class Backtester
         IReadOnlyList<ScoringStrategy> strategies,
         int evalWindow = 200,
         int warmup = 150,
-        int randomSeed = 20260831)
+        int randomSeed = 20260831,
+        int? configuredPoolSize = null,
+        DateOnly? poolExpansionDate = null)
     {
         if (draws.Count <= warmup + 1)
             throw new InvalidOperationException($"Need more than {warmup + 1} draws to backtest.");
@@ -57,7 +59,7 @@ public static class Backtester
         {
             var prefix = new PrefixView(draws, i); // draws[0..i) only — the target draw is invisible
             var actual = draws[i].Numbers;
-            var fs = FeatureCalculator.Compute(prefix);
+            var fs = FeatureCalculator.Compute(prefix, configuredPoolSize, poolExpansionDate);
 
             var stepScores = new List<(ScoringStrategy Strategy, Dictionary<int, double> Scores, int Matches)>(strategies.Count);
             foreach (var strategy in strategies)
@@ -119,7 +121,7 @@ public static class Backtester
               $"Bonferroni-corrected noise band (±{zCrit * se:0.000} across {results.Count} strategies). " +
               "A real, persistent effect like this would suggest physical bias — verify before trusting it.";
 
-        var pool2 = PoolInfo.Detect(draws);
+        var pool2 = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
         return new BacktestReport
         {
             Strategies = results,

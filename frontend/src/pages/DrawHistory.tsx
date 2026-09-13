@@ -21,6 +21,8 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
   const [editStars, setEditStars] = useState<string[]>(() =>
     emptyNumbers(lottery.luckyStarCount),
   );
+  const [editDrawNumber, setEditDrawNumber] = useState("");
+  const [editDate, setEditDate] = useState("");
   const [showAddRound, setShowAddRound] = useState(false);
   const [roundValues, setRoundValues] = useState<string[]>(() =>
     emptyNumbers(lottery.mainNumberCount),
@@ -51,6 +53,8 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
     setEditValues(draw.numbers.map(String));
     setEditBonus(draw.bonus?.toString() ?? "");
     setEditStars(draw.luckyStars.map(String));
+    setEditDrawNumber(draw.drawNumber.toString());
+    setEditDate(draw.date);
     setShowAddRound(false);
     setError("");
   };
@@ -61,12 +65,28 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
       setError(`Enter all ${lottery.mainNumberCount} numbers before saving.`);
       return;
     }
+    const parsedDrawNumber = parseInt(editDrawNumber, 10);
+    if (Number.isNaN(parsedDrawNumber)) {
+      setError("Draw number must be a valid number.");
+      return;
+    }
+    if (!editDate) {
+      setError("Please enter the draw date.");
+      return;
+    }
 
     setSaving(true);
     try {
       const bonus = editBonus.trim() === "" ? null : parseInt(editBonus, 10);
       const stars = editStars.map((value) => parseInt(value, 10));
-      await api.updateDraw(editingId, numbers, bonus, stars);
+      await api.updateDraw(
+        editingId,
+        numbers,
+        bonus,
+        stars,
+        parsedDrawNumber,
+        editDate,
+      );
       setEditingId(null);
       await load(showingAll);
     } catch (saveError) {
@@ -226,8 +246,35 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
                   const isEditing = editingId === draw.id;
                   return (
                     <tr key={draw.id}>
-                      <td>#{draw.drawNumber}</td>
-                      <td>{draw.date}</td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={1}
+                            className="compact-text-input"
+                            value={editDrawNumber}
+                            aria-label={`Draw ${draw.drawNumber}, draw number`}
+                            onChange={(event) =>
+                              setEditDrawNumber(event.target.value)
+                            }
+                          />
+                        ) : (
+                          `#${draw.drawNumber}`
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="date"
+                            className="compact-text-input"
+                            value={editDate}
+                            aria-label={`Draw ${draw.drawNumber}, date`}
+                            onChange={(event) => setEditDate(event.target.value)}
+                          />
+                        ) : (
+                          draw.date
+                        )}
+                      </td>
                       <td>{draw.machine || "—"}</td>
                       <td>
                         {isEditing ? (
