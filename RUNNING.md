@@ -8,7 +8,7 @@
   logic lives in the `LottoPredictor.Core` class library, so the DB provider can be swapped for
   SQL Server without touching the logic.
 - **Frontend**: **React 18 + TypeScript** on **Vite**, plain CSS, no UI framework.
-- **Tests**: xUnit (70 tests).
+- **Tests**: xUnit.
 
 ## Prerequisites
 
@@ -43,9 +43,9 @@ dotnet run --launch-profile http
 ```
 
 → http://localhost:5080 — the log shows "Analysis ready: 3226 draws, pool 1-59, learning
-generation N, active strategy '…'" plus the backtest verdict. Each startup (and each new draw)
-runs one learning generation, so the first request after adding a result takes a few seconds
-while the walk-forward backtest recomputes.
+generation N, active strategy '…'" plus the backtest verdict. A new optimiser generation is
+created only for a new dataset size; restarting the app or refreshing analysis for unchanged data
+reuses the existing logged generation.
 
 **Terminal 2 — UI**:
 
@@ -83,6 +83,25 @@ dotnet test
   `dotnet run --launch-profile http -- --CsvImportPath=/path/to/file.csv`
 - To point at a different EuroMillions CSV:
   `dotnet run --launch-profile http -- --EuroMillionsCsvImportPath=/path/to/euromillions.csv`
+- The dashboard portfolio control chooses fixed `K` lines, defaulting to `1`. The reported primary
+  objective is `P(at least one of K fixed lines matches at least four main numbers)`. Main-number
+  matches are evaluated per line; four numbers scattered across different lines are not counted as
+  a hit. Bonus balls and Lucky Stars are shown separately.
+- To reproduce the revised comparison, start the API and request the same `count` for each supported
+  game:
+
+```bash
+curl -H 'X-Lottery: uk-lotto' 'http://localhost:5080/api/backtesting'
+curl -H 'X-Lottery: uk-lotto' 'http://localhost:5080/api/predictions/lines?count=50'
+curl -H 'X-Lottery: euromillions' 'http://localhost:5080/api/backtesting'
+curl -H 'X-Lottery: euromillions' 'http://localhost:5080/api/predictions/lines?count=50'
+```
+
+  The backtesting response contains exact single-line random four-plus probability, expected random
+  four-plus hits, observed strategy hit counts/rates, and confidence intervals. The lines response
+  contains coverage-optimised portfolio probability and a matched random-distinct portfolio baseline
+  estimated with reproducible simulation. These comparisons do not assume historical results contain
+  a predictive advantage.
 - Recommended VS Code extensions: **C# Dev Kit** for backend debugging (F5 works against the
   `http` launch profile); the built-in TypeScript support handles the frontend.
 - The API port is pinned to 5080 in

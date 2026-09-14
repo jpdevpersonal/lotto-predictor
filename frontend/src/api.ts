@@ -85,7 +85,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ excludeLastDrawNumbers }),
     }),
-  predictionLines: (count = 50, excludeLastDrawNumbers = false) =>
+  predictionLines: (count = 1, excludeLastDrawNumbers = false) =>
     request<PredictionLinesDto>(
       `/api/predictions/lines?count=${count}&excludeLastDrawNumbers=${excludeLastDrawNumbers}`,
     ),

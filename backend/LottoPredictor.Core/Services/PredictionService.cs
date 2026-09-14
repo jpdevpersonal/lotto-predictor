@@ -13,7 +13,7 @@ public interface IPredictionService
     Task<IReadOnlyList<PredictionDto>> GetHistoryAsync(int limit = 100, CancellationToken ct = default);
     /// <summary>Top-N candidate lines, computed on demand and never persisted.</summary>
     Task<PredictionLinesDto> GenerateLinesAsync(
-        int count = 50,
+        int count = 1,
         bool excludeLastDrawNumbers = false,
         CancellationToken ct = default);
     /// <summary>Consensus line over the same top-N lines (screen-only).</summary>
@@ -72,7 +72,7 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
     }
 
     public async Task<PredictionLinesDto> GenerateLinesAsync(
-        int count = 50,
+        int count = 1,
         bool excludeLastDrawNumbers = false,
         CancellationToken ct = default)
     {
@@ -93,17 +93,27 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         }
 
         var (scores, strategy) = ActiveScores(snapshot);
-        var lines = PredictionEngine.GenerateTopLines(
+        var portfolio = PortfolioOptimizer.BuildCoveragePortfolio(
             snapshot.Features, scores, strategy, count, excludedMain);
         var starLines = GenerateLuckyStarLines(snapshot, count, excludedLuckyStars);
         return new PredictionLinesDto(
             snapshot.ActiveStrategy.Name,
             snapshot.Draws[^1].DrawNumber,
-            lines.Select((line, index) => new PredictionLineDto(
-                index + 1,
+            portfolio.Lines.Count,
+            portfolio.Objective,
+            Math.Round(portfolio.SingleLineFourPlusProbability, 8),
+            Math.Round(portfolio.CoverageOptimized.Probability, 8),
+            Math.Round(portfolio.CoverageOptimized.CiLow, 8),
+            Math.Round(portfolio.CoverageOptimized.CiHigh, 8),
+            Math.Round(portfolio.RandomDistinct.Probability, 8),
+            portfolio.CoverageOptimized.Trials,
+            portfolio.Lines.Select((line, index) => new PredictionLineDto(
+                line.Rank,
                 line.Numbers,
                 starLines.Count > 0 ? starLines[index % starLines.Count].Numbers : [],
-                Math.Round(line.SetScore, 4))).ToList());
+                line.Score,
+                line.NewFourSubsets,
+                line.SharedFourSubsets)).ToList());
     }
 
     public async Task<BestOfLinesDto> GenerateBestOfLinesAsync(int count = 50, CancellationToken ct = default)

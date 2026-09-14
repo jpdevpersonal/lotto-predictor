@@ -86,26 +86,33 @@ public class AnalysisService : IAnalysisService
                 .ToList();
 
             var features = FeatureCalculator.Compute(
-                events, lottery.MainPoolSize, lottery.MainPoolExpansionDate);
+                events, lottery.MainPoolSize, lottery.MainPoolExpansionDate,
+                ruleEras: lottery.MainPoolRules);
             var luckyStarEvents = !lottery.BonusSharesMainPool
                 ? draws.Select(d => new DrawEvent(
                     d.Sequence, d.DrawNumber, d.Date, d.BonusNumbers())).ToList()
                 : null;
             var luckyStarFeatures = luckyStarEvents is { Count: > 0 }
-                ? FeatureCalculator.Compute(luckyStarEvents, lottery.BonusPoolSize)
+                ? FeatureCalculator.Compute(luckyStarEvents, lottery.BonusPoolSize,
+                    ruleEras: lottery.BonusPoolRules)
                 : null;
 
-            // Learning step: seed the optimizer with previously learned strategies (persisted)
-            // plus the hand-written candidates, generate one generation of new candidates, and
-            // let the same leak-free walk-forward backtest judge everything together.
+            // Learning step: only advance the optimizer when this dataset size has not already
+            // been analysed. Rebuilding the snapshot for the same data must be idempotent.
             var learned = await db.LearnedStrategies.AsNoTracking()
                 .OrderByDescending(s => s.RecencyWeightedAvg)
                 .ToListAsync(ct);
-            int generation = (learned.Count > 0 ? learned.Max(s => s.Generation) : 0) + 1;
+            int drawCount = events.Count;
+            bool alreadyAnalysed = await db.StrategyPerformanceLogs.AsNoTracking()
+                .AnyAsync(log => log.DrawCount == drawCount, ct);
+            int previousGeneration = learned.Count > 0 ? learned.Max(s => s.Generation) : 0;
+            int generation = alreadyAnalysed ? previousGeneration : previousGeneration + 1;
 
             var learnedStrategies = learned.Select(StrategyOptimizer.ToStrategy).ToList();
             var seeds = learnedStrategies.Concat(ScoringStrategy.Candidates).ToList();
-            var newCandidates = StrategyOptimizer.GenerateCandidates(seeds, generation);
+            var newCandidates = alreadyAnalysed
+                ? []
+                : StrategyOptimizer.GenerateCandidates(seeds, generation);
 
             var allStrategies = ScoringStrategy.Candidates
                 .Concat(learnedStrategies)
@@ -118,7 +125,8 @@ public class AnalysisService : IAnalysisService
                 configuredPoolSize: lottery.MainPoolSize,
                 poolExpansionDate: lottery.MainPoolExpansionDate);
 
-            await PersistLearningAsync(db, backtest, generation, events.Count, ct);
+            if (!alreadyAnalysed)
+                await PersistLearningAsync(db, backtest, generation, drawCount, ct);
 
             state.Snapshot = new AnalysisSnapshot
             {

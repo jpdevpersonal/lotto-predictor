@@ -104,10 +104,13 @@ public class FeatureCalculatorTests
     public void Era_awareness_numbers_above_49_only_eligible_after_pool_change()
     {
         var draws = new List<DrawEvent>();
-        for (int i = 1; i <= 100; i++) draws.Add(Ev(i, 1, 2, 3, 4, 5, 49));   // 49-pool era
-        for (int i = 101; i <= 140; i++) draws.Add(Ev(i, 1, 2, 3, 4, 5, 59)); // 59-pool era
+        for (int i = 1; i <= 100; i++)
+            draws.Add(new DrawEvent(i, i, new DateOnly(2015, 10, 3), [1, 2, 3, 4, 5, 49]));
+        for (int i = 101; i <= 140; i++)
+            draws.Add(new DrawEvent(i, i, new DateOnly(2015, 10, 10), [1, 2, 3, 4, 5, 59]));
 
-        var fs = FeatureCalculator.Compute(draws);
+        var fs = FeatureCalculator.Compute(
+            draws, configuredPoolSize: 59, poolExpansionDate: new DateOnly(2015, 10, 10));
         Assert.Equal(59, fs.Pool.PoolSize);
         Assert.Equal(100, fs.Pool.Era2StartIndex);
         Assert.Equal(140, fs.For(10).EligibleDraws);

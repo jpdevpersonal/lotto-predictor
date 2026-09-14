@@ -103,6 +103,19 @@ public sealed class ServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Rebuilding_analysis_for_same_dataset_does_not_advance_generation()
+    {
+        SeedDraws(200);
+
+        var first = await _analysis.GetSnapshotAsync();
+        _analysis.Invalidate();
+        var second = await _analysis.GetSnapshotAsync();
+
+        Assert.Equal(first.Draws.Count, second.Draws.Count);
+        Assert.Equal(first.LearningGeneration, second.LearningGeneration);
+    }
+
+    [Fact]
     public async Task AddDrawRounds_stores_two_sequences_under_one_draw_number()
     {
         SeedDraws(200);

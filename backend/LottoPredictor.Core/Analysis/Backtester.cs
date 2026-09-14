@@ -6,13 +6,19 @@ public sealed record StrategyBacktest(
     double AvgMatches,
     double StdMatches,
     double RecencyWeightedAvg, // exponential-decay average (half-life 50 draws): recent form
-    int[] MatchCounts); // index = number of matches 0..6
+    int[] MatchCounts,
+    int FourPlusHits,
+    double FourPlusRate,
+    double FourPlusCiLow,
+    double FourPlusCiHigh); // index = number of matches 0..6
 
 public sealed class BacktestReport
 {
     public required IReadOnlyList<StrategyBacktest> Strategies { get; init; }
     public required StrategyBacktest Best { get; init; }
     public required double RandomExpectedMatches { get; init; }
+    public required double RandomFourPlusProbability { get; init; }
+    public required double RandomExpectedFourPlusHits { get; init; }
     public required double[] RandomMatchDistribution { get; init; } // P(k matches), k=0..6
     public required StrategyBacktest RandomSimulated { get; init; }
     public required string Verdict { get; init; }
@@ -54,12 +60,14 @@ public static class Backtester
         var randomMatches = new List<int>(evaluated);
         var rng = new Random(randomSeed);
         double expectedSum = 0;
+        double expectedFourPlusSum = 0;
 
         for (int i = start; i < draws.Count; i++)
         {
             var prefix = new PrefixView(draws, i); // draws[0..i) only — the target draw is invisible
             var actual = draws[i].Numbers;
-            var fs = FeatureCalculator.Compute(prefix, configuredPoolSize, poolExpansionDate);
+            var fs = FeatureCalculator.Compute(
+                prefix, configuredPoolSize, poolExpansionDate, draws[i].Date);
 
             var stepScores = new List<(ScoringStrategy Strategy, Dictionary<int, double> Scores, int Matches)>(strategies.Count);
             foreach (var strategy in strategies)
@@ -91,9 +99,10 @@ public static class Backtester
             else
                 foreach (var s in strategies) hedge[s.Name] /= norm;
 
-            int pool = fs.Pool.PoolAt(prefix.Count - 1);
+            int pool = fs.Pool.NextPoolSize;
             int pickCount = fs.PickCount;
             expectedSum += (double)(pickCount * pickCount) / pool;
+            expectedFourPlusSum += FourPlusProbability(pool, pickCount);
             randomMatches.Add(CountMatches(RandomSet(rng, pool, pickCount), actual));
         }
 
@@ -102,24 +111,29 @@ public static class Backtester
             .ToList();
         results.Add(Summarise(new ScoringStrategy(EnsembleName, 0, 0, 0, 0, 0, 0), ensembleMatches));
 
-        var best = results.OrderByDescending(r => r.RecencyWeightedAvg).ThenBy(r => r.Strategy.Name).First();
+        var best = results
+            .OrderByDescending(r => r.FourPlusRate)
+            .ThenByDescending(r => r.RecencyWeightedAvg)
+            .ThenBy(r => r.Strategy.Name)
+            .First();
         double randomExpected = expectedSum / evaluated;
+        double randomFourPlusProbability = expectedFourPlusSum / evaluated;
         var randomSummary = Summarise(new ScoringStrategy("random-baseline", 0, 0, 0, 0, 0, 0), randomMatches);
 
         // Honest verdict with a Bonferroni correction: picking the best of N tested strategies
         // inflates apparent skill, so the significance threshold widens with N.
-        double se = best.StdMatches / Math.Sqrt(best.Evaluated);
-        double diff = best.AvgMatches - randomExpected;
+                double se = Math.Sqrt(randomFourPlusProbability * (1.0 - randomFourPlusProbability) / best.Evaluated);
+                double diff = best.FourPlusRate - randomFourPlusProbability;
         double zCrit = StatFunctions.InverseNormalCdf(1.0 - 0.025 / Math.Max(1, results.Count));
-        string verdict = diff <= zCrit * se
-            ? $"No measurable advantage over random selection. Best strategy '{best.Strategy.Name}' averaged " +
-              $"{best.AvgMatches:0.000} matches vs {randomExpected:0.000} expected from random picks " +
-              $"(difference {diff:+0.000;-0.000} is within the Bonferroni-corrected noise band ±{zCrit * se:0.000} " +
-              $"for {results.Count} tested strategies). This is the expected outcome for a fair lottery."
-            : $"Strategy '{best.Strategy.Name}' averaged {best.AvgMatches:0.000} matches vs {randomExpected:0.000} " +
-              $"expected from random picks over {best.Evaluated} draws. The difference exceeds even the " +
-              $"Bonferroni-corrected noise band (±{zCrit * se:0.000} across {results.Count} strategies). " +
-              "A real, persistent effect like this would suggest physical bias — verify before trusting it.";
+                string verdict = diff <= zCrit * se
+                        ? $"No measurable advantage over random selection for the four-plus objective. Best strategy '{best.Strategy.Name}' hit " +
+                            $"4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} evaluated draws " +
+                            $"({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line). " +
+                            $"The observed difference is within the Bonferroni-corrected noise band for {results.Count} tested strategies. " +
+                            $"Average matches remain secondary: {best.AvgMatches:0.000} vs {randomExpected:0.000} expected."
+                        : $"Strategy '{best.Strategy.Name}' hit 4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} " +
+                            $"evaluated draws ({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line). " +
+                            "This exceeds the current correction over the candidate list only; repeated experiments and future prospective tracking still need to confirm it.";
 
         var pool2 = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
         return new BacktestReport
@@ -127,6 +141,8 @@ public static class Backtester
             Strategies = results,
             Best = best,
             RandomExpectedMatches = randomExpected,
+            RandomFourPlusProbability = randomFourPlusProbability,
+            RandomExpectedFourPlusHits = expectedFourPlusSum,
             RandomMatchDistribution = HypergeometricMatchDistribution(pool2.PoolSize, draws[0].Numbers.Length),
             RandomSimulated = randomSummary,
             Verdict = verdict,
@@ -156,6 +172,9 @@ public static class Backtester
         return dist;
     }
 
+    public static double FourPlusProbability(int poolSize, int pickCount) =>
+        HypergeometricMatchDistribution(poolSize, pickCount).Skip(4).Sum();
+
     private static double Choose(int n, int k)
     {
         if (k < 0 || k > n) return 0;
@@ -173,10 +192,27 @@ public static class Backtester
 
     private const double RecencyHalfLife = 50.0;
 
+    public static (double Low, double High) WilsonInterval(int hits, int total, double z = 1.959963984540054)
+    {
+        if (total <= 0) return (0, 0);
+        if (hits == 0)
+        {
+            double high = z * z / (total + z * z);
+            return (0, high);
+        }
+        double phat = (double)hits / total;
+        double denom = 1 + z * z / total;
+        double centre = phat + z * z / (2 * total);
+        double margin = z * Math.Sqrt((phat * (1 - phat) + z * z / (4 * total)) / total);
+        return (Math.Max(0, (centre - margin) / denom), Math.Min(1, (centre + margin) / denom));
+    }
+
     private static StrategyBacktest Summarise(ScoringStrategy strategy, List<int> matches)
     {
         var counts = new int[7];
         foreach (var m in matches) counts[m]++;
+        int fourPlusHits = counts.Skip(4).Sum();
+        var (ciLow, ciHigh) = WilsonInterval(fourPlusHits, matches.Count);
         double avg = matches.Count > 0 ? matches.Average() : 0;
         double var = matches.Count > 1
             ? matches.Sum(m => (m - avg) * (m - avg)) / (matches.Count - 1)
@@ -192,7 +228,9 @@ public static class Backtester
         }
         double recency = weightTotal > 0 ? weightedSum / weightTotal : 0;
 
-        return new StrategyBacktest(strategy, matches.Count, avg, Math.Sqrt(var), recency, counts);
+        return new StrategyBacktest(
+            strategy, matches.Count, avg, Math.Sqrt(var), recency, counts,
+            fourPlusHits, matches.Count > 0 ? (double)fourPlusHits / matches.Count : 0, ciLow, ciHigh);
     }
 
     /// <summary>Zero-copy read-only view of the first N items of a list.</summary>
