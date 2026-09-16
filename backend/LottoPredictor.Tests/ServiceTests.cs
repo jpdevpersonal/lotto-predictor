@@ -103,6 +103,32 @@ public sealed class ServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AddDraw_rejects_a_date_before_the_latest_sequence()
+    {
+        SeedDraws(200);
+
+        var exception = await Assert.ThrowsAsync<ValidationFailedException>(() =>
+            _drawService.AddDrawAsync(new AddDrawRequest(
+                [5, 10, 15, 20, 25, 59], Date: "2020-01-01")));
+
+        Assert.Contains("before the latest", exception.Message);
+        Assert.Equal(200, await _drawService.CountAsync());
+    }
+
+    [Fact]
+    public async Task UpdateDraw_rejects_a_date_that_breaks_sequence_order()
+    {
+        SeedDraws(200);
+        var latest = (await _drawService.GetLatestAsync())!;
+
+        var exception = await Assert.ThrowsAsync<ValidationFailedException>(() =>
+            _drawService.UpdateDrawAsync(latest.Id, new UpdateDrawRequest(
+                latest.Numbers, Date: "2020-01-01")));
+
+        Assert.Contains("chronological neighbours", exception.Message);
+    }
+
+    [Fact]
     public async Task Rebuilding_analysis_for_same_dataset_does_not_advance_generation()
     {
         SeedDraws(200);

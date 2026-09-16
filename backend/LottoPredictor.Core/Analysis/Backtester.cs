@@ -23,6 +23,10 @@ public sealed class BacktestReport
     public required StrategyBacktest RandomSimulated { get; init; }
     public required string Verdict { get; init; }
     public required int WarmupDraws { get; init; }
+    /// <summary>Number of chronological evaluation draws used to choose the strategy.</summary>
+    public required int SelectionEvaluated { get; init; }
+    /// <summary>Number of later, untouched evaluation draws used for the reported result.</summary>
+    public required int HoldoutEvaluated { get; init; }
 
     /// <summary>Final multiplicative-weights distribution over strategies after the walk-forward
     /// run. This is what the hedge ensemble would use for the next real prediction.</summary>
@@ -48,19 +52,23 @@ public static class Backtester
         int? configuredPoolSize = null,
         DateOnly? poolExpansionDate = null)
     {
-        if (draws.Count <= warmup + 1)
-            throw new InvalidOperationException($"Need more than {warmup + 1} draws to backtest.");
+        if (draws.Count <= warmup + 2)
+            throw new InvalidOperationException($"Need more than {warmup + 2} draws to backtest.");
 
         int start = Math.Max(warmup, draws.Count - evalWindow);
         int evaluated = draws.Count - start;
+        int selectionEvaluated = Math.Max(1, evaluated * 2 / 3);
+        int holdoutEvaluated = evaluated - selectionEvaluated;
+        if (holdoutEvaluated < 1)
+            throw new InvalidOperationException("Need at least two evaluation draws to reserve a chronological holdout.");
 
         var matchLists = strategies.ToDictionary(s => s.Name, _ => new List<int>(evaluated));
         var ensembleMatches = new List<int>(evaluated);
         var hedge = strategies.ToDictionary(s => s.Name, _ => 1.0 / strategies.Count);
         var randomMatches = new List<int>(evaluated);
         var rng = new Random(randomSeed);
-        double expectedSum = 0;
-        double expectedFourPlusSum = 0;
+        var expectedMatches = new List<double>(evaluated);
+        var expectedFourPlus = new List<double>(evaluated);
 
         for (int i = start; i < draws.Count; i++)
         {
@@ -101,39 +109,56 @@ public static class Backtester
 
             int pool = fs.Pool.NextPoolSize;
             int pickCount = fs.PickCount;
-            expectedSum += (double)(pickCount * pickCount) / pool;
-            expectedFourPlusSum += FourPlusProbability(pool, pickCount);
+            expectedMatches.Add((double)(pickCount * pickCount) / pool);
+            expectedFourPlus.Add(FourPlusProbability(pool, pickCount));
             randomMatches.Add(CountMatches(RandomSet(rng, pool, pickCount), actual));
         }
 
-        var results = strategies
-            .Select(s => Summarise(s, matchLists[s.Name]))
+        // Select a strategy using only the earlier part of the walk-forward window. The later
+        // chronological holdout is never used to choose a winner, so it remains an honest
+        // estimate of the chosen strategy's performance.
+        var selectionResults = strategies
+            .Select(s => Summarise(s, matchLists[s.Name].Take(selectionEvaluated).ToList()))
             .ToList();
-        results.Add(Summarise(new ScoringStrategy(EnsembleName, 0, 0, 0, 0, 0, 0), ensembleMatches));
+        selectionResults.Add(Summarise(
+            new ScoringStrategy(EnsembleName, 0, 0, 0, 0, 0, 0),
+            ensembleMatches.Take(selectionEvaluated).ToList()));
 
-        var best = results
+        var selected = selectionResults
             .OrderByDescending(r => r.FourPlusRate)
             .ThenByDescending(r => r.RecencyWeightedAvg)
             .ThenBy(r => r.Strategy.Name)
             .First();
-        double randomExpected = expectedSum / evaluated;
-        double randomFourPlusProbability = expectedFourPlusSum / evaluated;
-        var randomSummary = Summarise(new ScoringStrategy("random-baseline", 0, 0, 0, 0, 0, 0), randomMatches);
+
+        var results = strategies
+            .Select(s => Summarise(s, matchLists[s.Name].Skip(selectionEvaluated).ToList()))
+            .ToList();
+        results.Add(Summarise(
+            new ScoringStrategy(EnsembleName, 0, 0, 0, 0, 0, 0),
+            ensembleMatches.Skip(selectionEvaluated).ToList()));
+        var best = results.Single(r => r.Strategy.Name == selected.Strategy.Name);
+
+        double randomExpected = expectedMatches.Skip(selectionEvaluated).Average();
+        double randomFourPlusProbability = expectedFourPlus.Skip(selectionEvaluated).Average();
+        double randomExpectedFourPlusHits = expectedFourPlus.Skip(selectionEvaluated).Sum();
+        var randomSummary = Summarise(
+            new ScoringStrategy("random-baseline", 0, 0, 0, 0, 0, 0),
+            randomMatches.Skip(selectionEvaluated).ToList());
 
         // Honest verdict with a Bonferroni correction: picking the best of N tested strategies
         // inflates apparent skill, so the significance threshold widens with N.
                 double se = Math.Sqrt(randomFourPlusProbability * (1.0 - randomFourPlusProbability) / best.Evaluated);
                 double diff = best.FourPlusRate - randomFourPlusProbability;
-        double zCrit = StatFunctions.InverseNormalCdf(1.0 - 0.025 / Math.Max(1, results.Count));
+        double zCrit = StatFunctions.InverseNormalCdf(1.0 - 0.025 / Math.Max(1, selectionResults.Count));
                 string verdict = diff <= zCrit * se
                         ? $"No measurable advantage over random selection for the four-plus objective. Best strategy '{best.Strategy.Name}' hit " +
-                            $"4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} evaluated draws " +
+                            $"4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} held-out draws " +
                             $"({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line). " +
-                            $"The observed difference is within the Bonferroni-corrected noise band for {results.Count} tested strategies. " +
+                            $"The observed difference is within the Bonferroni-corrected noise band for {selectionResults.Count} strategies selected on earlier draws. " +
                             $"Average matches remain secondary: {best.AvgMatches:0.000} vs {randomExpected:0.000} expected."
                         : $"Strategy '{best.Strategy.Name}' hit 4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} " +
-                            $"evaluated draws ({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line). " +
-                            "This exceeds the current correction over the candidate list only; repeated experiments and future prospective tracking still need to confirm it.";
+                            $"held-out draws ({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line). " +
+                            "This exceeds the current correction after chronological strategy selection only; repeated experiments and future prospective tracking still need to confirm it.";
 
         var pool2 = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
         return new BacktestReport
@@ -142,11 +167,13 @@ public static class Backtester
             Best = best,
             RandomExpectedMatches = randomExpected,
             RandomFourPlusProbability = randomFourPlusProbability,
-            RandomExpectedFourPlusHits = expectedFourPlusSum,
+            RandomExpectedFourPlusHits = randomExpectedFourPlusHits,
             RandomMatchDistribution = HypergeometricMatchDistribution(pool2.PoolSize, draws[0].Numbers.Length),
             RandomSimulated = randomSummary,
             Verdict = verdict,
             WarmupDraws = start,
+            SelectionEvaluated = selectionEvaluated,
+            HoldoutEvaluated = holdoutEvaluated,
             HedgeWeights = hedge,
         };
     }

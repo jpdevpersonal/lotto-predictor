@@ -65,7 +65,7 @@ public class LearningEngineTests
         var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 150, warmup: 200);
 
         var ensemble = report.Strategies.Single(s => s.Strategy.Name == Backtester.EnsembleName);
-        Assert.Equal(150, ensemble.MatchCounts.Sum());
+        Assert.Equal(report.HoldoutEvaluated, ensemble.MatchCounts.Sum());
         Assert.Equal(1.0, report.HedgeWeights.Values.Sum(), 6);
         Assert.All(report.HedgeWeights.Values, w => Assert.InRange(w, 0.0, 1.0));
     }

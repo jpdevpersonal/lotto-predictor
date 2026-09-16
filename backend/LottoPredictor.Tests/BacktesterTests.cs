@@ -13,10 +13,12 @@ public class BacktesterTests
 
         foreach (var s in report.Strategies)
         {
-            Assert.Equal(100, s.Evaluated);
-            Assert.Equal(100, s.MatchCounts.Sum());
+            Assert.Equal(report.HoldoutEvaluated, s.Evaluated);
+            Assert.Equal(report.HoldoutEvaluated, s.MatchCounts.Sum());
         }
-        Assert.Equal(100, report.RandomSimulated.MatchCounts.Sum());
+        Assert.Equal(66, report.SelectionEvaluated);
+        Assert.Equal(34, report.HoldoutEvaluated);
+        Assert.Equal(report.HoldoutEvaluated, report.RandomSimulated.MatchCounts.Sum());
     }
 
     [Fact]
@@ -133,6 +135,18 @@ public class BacktesterTests
         var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 100, warmup: 150);
         Assert.InRange(report.Best.AvgMatches, 5.0, 6.0);
         Assert.DoesNotContain("No measurable advantage", report.Verdict);
+    }
+
+    [Fact]
+    public void Best_strategy_is_selected_before_the_held_out_period()
+    {
+        var draws = RandomHistory(300, 59, seed: 12);
+        var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 90, warmup: 150);
+
+        Assert.Equal(60, report.SelectionEvaluated);
+        Assert.Equal(30, report.HoldoutEvaluated);
+        Assert.Equal(30, report.Best.Evaluated);
+        Assert.Contains("held-out", report.Verdict);
     }
 
     [Fact]

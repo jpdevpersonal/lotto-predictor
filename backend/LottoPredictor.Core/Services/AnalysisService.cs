@@ -36,8 +36,8 @@ public class AnalysisOptions
 
 /// <summary>Owns the derived state (features + walk-forward backtest + active strategy choice).
 /// Everything is recomputed automatically whenever a draw is added; nothing needs manual
-/// retraining. The active strategy is simply the candidate with the best walk-forward
-/// average matches on the current dataset.</summary>
+/// retraining. The active strategy is selected by the earlier part of the walk-forward window
+/// and its displayed performance comes only from the later chronological holdout.</summary>
 public class AnalysisService : IAnalysisService
 {
     private sealed class ProfileAnalysisState

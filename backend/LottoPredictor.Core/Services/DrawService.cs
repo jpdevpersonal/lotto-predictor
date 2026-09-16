@@ -205,7 +205,11 @@ public class DrawService : IDrawService
         if (request.DrawNumber.HasValue)
             draw.DrawNumber = request.DrawNumber.Value;
         if (request.Date is not null)
-            draw.Date = ParseDate(request.Date);
+        {
+            var updatedDate = ParseDate(request.Date);
+            await EnsureDateFitsSequenceAsync(db, draw.Sequence, updatedDate, ct);
+            draw.Date = updatedDate;
+        }
 
         var evaluatedPredictions = await db.Predictions
             .Include(prediction => prediction.Evaluations)
@@ -239,6 +243,14 @@ public class DrawService : IDrawService
         int maxDrawNumber = await db.Draws.MaxAsync(d => (int?)d.DrawNumber, ct) ?? 0;
 
         var drawDate = date is not null ? ParseDate(date) : DateOnly.FromDateTime(DateTime.UtcNow);
+        var latestDate = await db.Draws
+            .OrderByDescending(draw => draw.Sequence)
+            .Select(draw => (DateOnly?)draw.Date)
+            .FirstOrDefaultAsync(ct);
+        if (latestDate is DateOnly last && drawDate < last)
+            throw new ValidationFailedException([
+                $"Draw date {drawDate:yyyy-MM-dd} is before the latest recorded draw date {last:yyyy-MM-dd}. " +
+                "Backdated results must be imported in chronological order."]);
         var resolvedDrawNumber = drawNumber ?? maxDrawNumber + 1;
         var added = rounds.Select((numbers, index) =>
         {
@@ -282,6 +294,26 @@ public class DrawService : IDrawService
         if (!DateOnly.TryParse(date, out var parsed))
             throw new ValidationFailedException([$"'{date}' is not a valid date."]);
         return parsed;
+    }
+
+    private static async Task EnsureDateFitsSequenceAsync(
+        LottoDbContext db, int sequence, DateOnly date, CancellationToken ct)
+    {
+        var previousDate = await db.Draws
+            .Where(item => item.Sequence < sequence)
+            .OrderByDescending(item => item.Sequence)
+            .Select(item => (DateOnly?)item.Date)
+            .FirstOrDefaultAsync(ct);
+        var nextDate = await db.Draws
+            .Where(item => item.Sequence > sequence)
+            .OrderBy(item => item.Sequence)
+            .Select(item => (DateOnly?)item.Date)
+            .FirstOrDefaultAsync(ct);
+
+        if (previousDate is DateOnly previous && date < previous ||
+            nextDate is DateOnly next && date > next)
+            throw new ValidationFailedException([
+                "A corrected draw date must remain between the dates of its chronological neighbours."]);
     }
 
     private static IReadOnlyList<string> ValidateResult(
