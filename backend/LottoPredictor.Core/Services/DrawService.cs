@@ -18,7 +18,7 @@ public interface IDrawService
     Task<IReadOnlyList<DrawDto>> GetDrawRoundsAsync(int drawNumber, CancellationToken ct = default);
     Task<IReadOnlyList<DrawDto>> GetDrawsOnDateAsync(DateOnly date, CancellationToken ct = default);
     Task<DrawHistoryDto> GetDrawHistoryAsync(
-        int offset = 0, int limit = 100, bool loadAll = false, CancellationToken ct = default);
+        int offset = 0, int limit = 100, CancellationToken ct = default);
     Task<DrawDto?> GetLatestAsync(CancellationToken ct = default);
     Task<int> CountAsync(CancellationToken ct = default);
     /// <summary>Validates and stores a new result, evaluates any outstanding predictions against it,
@@ -78,7 +78,7 @@ public class DrawService : IDrawService
     }
 
     public async Task<DrawHistoryDto> GetDrawHistoryAsync(
-        int offset = 0, int limit = 100, bool loadAll = false, CancellationToken ct = default)
+        int offset = 0, int limit = 100, CancellationToken ct = default)
     {
         offset = Math.Max(0, offset);
         limit = Math.Clamp(limit, 1, 200);
@@ -86,12 +86,10 @@ public class DrawService : IDrawService
         await using var db = await contextFactory.CreateDbContextAsync(ct);
         int total = await db.Draws.CountAsync(ct);
         var query = db.Draws.AsNoTracking().OrderByDescending(draw => draw.Sequence);
-        var items = loadAll
-            ? await query.ToListAsync(ct)
-            : await query.Skip(offset).Take(limit).ToListAsync(ct);
+        var items = await query.Skip(offset).Take(limit).ToListAsync(ct);
 
         return new DrawHistoryDto(
-            items.Select(ToDto).ToList(), total, loadAll ? 0 : offset, loadAll ? total : limit);
+            items.Select(ToDto).ToList(), total, offset, limit);
     }
 
     public async Task<DrawDto?> GetLatestAsync(CancellationToken ct = default)

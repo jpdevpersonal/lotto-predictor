@@ -236,17 +236,18 @@ public sealed class ServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task DrawHistory_loads_100_by_default_and_all_only_when_requested()
+    public async Task DrawHistory_caps_each_response_at_200_items()
     {
-        SeedDraws(200);
+        SeedDraws(250);
 
-        var initial = await _drawService.GetDrawHistoryAsync();
-        var all = await _drawService.GetDrawHistoryAsync(loadAll: true);
+        var initial = await _drawService.GetDrawHistoryAsync(limit: 9999);
+        var next = await _drawService.GetDrawHistoryAsync(offset: 200, limit: 200);
 
-        Assert.Equal(100, initial.Items.Count);
-        Assert.Equal(200, initial.Total);
-        Assert.Equal(200, all.Items.Count);
-        Assert.Equal(200, all.Limit);
+        Assert.Equal(200, initial.Items.Count);
+        Assert.Equal(250, initial.Total);
+        Assert.Equal(200, initial.Limit);
+        Assert.Equal(50, next.Items.Count);
+        Assert.Equal(200, next.Offset);
     }
 
     [Fact]

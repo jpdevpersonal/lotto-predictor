@@ -38,8 +38,8 @@ export const api = {
   statistics: () => request<StatisticsDto>("/api/statistics"),
   backtesting: () => request<BacktestingDto>("/api/backtesting"),
   latestDraw: () => request<DrawDto | null>("/api/draws/latest"),
-  drawHistory: (loadAll = false) =>
-    request<DrawHistoryDto>(`/api/draws/history?limit=100&loadAll=${loadAll}`),
+  drawHistory: (offset = 0, limit = 100) =>
+    request<DrawHistoryDto>(`/api/draws/history?offset=${offset}&limit=${limit}`),
   addDraw: (numbers: number[], bonus: number | null = null) =>
     request<DrawDto>("/api/draws", {
       method: "POST",
