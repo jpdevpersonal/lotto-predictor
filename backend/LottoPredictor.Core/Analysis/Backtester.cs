@@ -145,20 +145,20 @@ public static class Backtester
             new ScoringStrategy("random-baseline", 0, 0, 0, 0, 0, 0),
             randomMatches.Skip(selectionEvaluated).ToList());
 
-        // Honest verdict with a Bonferroni correction: picking the best of N tested strategies
-        // inflates apparent skill, so the significance threshold widens with N.
-                double se = Math.Sqrt(randomFourPlusProbability * (1.0 - randomFourPlusProbability) / best.Evaluated);
-                double diff = best.FourPlusRate - randomFourPlusProbability;
-        double zCrit = StatFunctions.InverseNormalCdf(1.0 - 0.025 / Math.Max(1, selectionResults.Count));
-                string verdict = diff <= zCrit * se
-                        ? $"No measurable advantage over random selection for the four-plus objective. Best strategy '{best.Strategy.Name}' hit " +
-                            $"4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} held-out draws " +
-                            $"({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line). " +
-                            $"The observed difference is within the Bonferroni-corrected noise band for {selectionResults.Count} strategies selected on earlier draws. " +
-                            $"Average matches remain secondary: {best.AvgMatches:0.000} vs {randomExpected:0.000} expected."
-                        : $"Strategy '{best.Strategy.Name}' hit 4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} " +
-                            $"held-out draws ({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line). " +
-                            "This exceeds the current correction after chronological strategy selection only; repeated experiments and future prospective tracking still need to confirm it.";
+        // The strategy was frozen before the holdout, so a single exact binomial test is valid.
+        // A normal approximation is unsafe here because four-plus hits are very rare.
+        double pValue = StatFunctions.BinomialUpperTail(
+            best.Evaluated, best.FourPlusHits, randomFourPlusProbability);
+        string verdict = pValue >= 0.05
+            ? $"No measurable advantage over random selection for the four-plus objective. Best strategy '{best.Strategy.Name}' hit " +
+              $"4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} held-out draws " +
+              $"({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line; " +
+              $"exact one-sided binomial p={pValue:0.####}). Average matches remain secondary: " +
+              $"{best.AvgMatches:0.000} vs {randomExpected:0.000} expected."
+            : $"Strategy '{best.Strategy.Name}' hit 4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} " +
+              $"held-out draws ({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line; " +
+              $"exact one-sided binomial p={pValue:0.####}). This is only a sparse historical signal; " +
+              "future prospective tracking is still required before treating it as an edge.";
 
         var pool2 = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
         return new BacktestReport

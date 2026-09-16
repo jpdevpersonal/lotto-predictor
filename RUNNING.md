@@ -31,15 +31,16 @@ Start both services with one command:
 ./run.sh
 ```
 
-The launcher installs frontend dependencies when needed, waits for the API, starts the UI at
-http://localhost:5173, and stops both services when you press Ctrl+C. To run the services in
-separate terminals instead, use the commands below.
+The launcher installs frontend dependencies when needed, creates a per-run local mutation key,
+passes it to both services, waits for the API, starts the UI at http://localhost:5173, and stops
+both services when you press Ctrl+C. To run the services in separate terminals instead, use the
+commands below.
 
 **Terminal 1 — API** (first run creates both databases and imports their CSV histories):
 
 ```bash
 cd backend/LottoPredictor.Api
-dotnet run --launch-profile http
+dotnet run --launch-profile http -- --MutationApiKey=replace-with-local-dev-key
 ```
 
 → http://localhost:5080 — the log shows "Analysis ready: 3226 draws, pool 1-59, learning
@@ -52,6 +53,8 @@ reuses the existing logged generation.
 ```bash
 cd frontend
 npm install     # first time only
+cp .env.example .env.local
+# edit .env.local so VITE_MUTATION_API_KEY matches the backend MutationApiKey
 npm run dev
 ```
 
@@ -68,6 +71,10 @@ dotnet test
 
 - Use the **Lottery** selector in the header to switch between UK National Lottery and
   EuroMillions. Every API request is routed to the selected lottery's separate database.
+- POST, PUT, PATCH, and DELETE requests under `/api` require `X-Api-Key`. The backend expected
+  value comes from `MutationApiKey`; the frontend reads the matching value from
+  `VITE_MUTATION_API_KEY`. Leave real local secrets in untracked files or shell environment
+  variables only.
 - UK result entry requires two rounds of six numbers with optional bonus balls. EuroMillions
   requires one round of five numbers plus two Lucky Stars. Both games support prediction,
   candidate lines, history, inline correction, statistics, learning, and backtesting.

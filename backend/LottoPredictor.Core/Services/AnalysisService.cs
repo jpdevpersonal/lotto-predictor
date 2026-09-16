@@ -158,16 +158,18 @@ public class AnalysisService : IAnalysisService
         var handWritten = ScoringStrategy.Candidates.Select(s => s.Name).ToHashSet();
         handWritten.Add(Backtester.EnsembleName); // ensemble is adaptive, not a weight vector to keep
 
-        // Survivors: learned/candidate strategies that outperform the best hand-written one
-        // on recency-weighted matches, capped so weak lineages die out.
+        // Survivors are ranked on the same four-plus objective used to select the active
+        // strategy. Average matches are a tie-breaker only, so a lineage cannot survive merely
+        // by improving a different metric.
         double handWrittenBest = backtest.Strategies
             .Where(r => handWritten.Contains(r.Strategy.Name))
-            .Max(r => r.RecencyWeightedAvg);
+            .Max(r => r.FourPlusRate);
         var survivors = backtest.Strategies
             .Where(r => !handWritten.Contains(r.Strategy.Name))
-            .OrderByDescending(r => r.RecencyWeightedAvg)
+            .OrderByDescending(r => r.FourPlusRate)
+            .ThenByDescending(r => r.RecencyWeightedAvg)
             .Take(StrategyOptimizer.MaxLearnedKept)
-            .Where(r => r.RecencyWeightedAvg >= handWrittenBest - 0.05)
+            .Where(r => r.FourPlusRate >= handWrittenBest)
             .ToList();
 
         var existing = await db.LearnedStrategies.ToListAsync(ct);

@@ -11,6 +11,8 @@ import type {
 } from "./types";
 
 let selectedLottery: LotteryKey = "uk-lotto";
+const mutationApiKey = import.meta.env.VITE_MUTATION_API_KEY;
+const mutatingMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 export function setApiLottery(lottery: LotteryKey) {
   selectedLottery = lottery;
@@ -18,20 +20,34 @@ export function setApiLottery(lottery: LotteryKey) {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
+  const method = init?.method?.toUpperCase() ?? "GET";
   headers.set("X-Lottery", selectedLottery);
+  if (mutationApiKey && mutatingMethods.has(method)) {
+    headers.set("X-Api-Key", mutationApiKey);
+  }
   const res = await fetch(url, { ...init, headers });
   if (res.status === 404) return null as T;
   if (!res.ok) {
-    let message = `Request failed (${res.status})`;
+    let message = defaultErrorMessage(res.status, method);
     try {
       const body = await res.json();
       if (body?.errors) message = (body.errors as string[]).join(" ");
+      else if (body?.title) message = body.title;
     } catch {
       /* keep default message */
     }
     throw new Error(message);
   }
   return res.json() as Promise<T>;
+}
+
+function defaultErrorMessage(status: number, method: string) {
+  if (mutatingMethods.has(method)) {
+    if (status === 503) return "Mutation API key is not configured on the server.";
+    if (status === 401) return "Mutation API key is missing. Restart the app with VITE_MUTATION_API_KEY configured.";
+    if (status === 403) return "Mutation API key is invalid. Check that frontend and backend keys match.";
+  }
+  return `Request failed (${status})`;
 }
 
 export const api = {

@@ -26,6 +26,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 var app = builder.Build();
 
 app.UseCors();
+app.UseMutationApiKey();
 app.MapControllers();
 
 // One-time seed: create schema and import the historical CSV if the database is empty.

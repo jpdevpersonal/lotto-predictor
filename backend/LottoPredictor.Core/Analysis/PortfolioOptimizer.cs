@@ -43,6 +43,9 @@ public static class PortfolioOptimizer
             .ToArray();
         if (legalNumbers.Length < pickCount)
             throw new InvalidOperationException($"Pool 1-{poolSize} cannot supply {pickCount} numbers.");
+        if (!HasAtLeastCombinations(legalNumbers.Length, pickCount, lineCount))
+            throw new InvalidOperationException(
+                $"Only {CombinationCount(legalNumbers.Length, pickCount)} distinct lines are available for the requested portfolio.");
 
         var rng = new Random(randomSeed + lineCount * 17 + poolSize * 31 + pickCount);
         var selected = new List<PortfolioLine>(lineCount);
@@ -77,9 +80,9 @@ public static class PortfolioOptimizer
 
             if (best is null)
             {
-                var fallback = RandomSet(rng, poolSize, pickCount);
+                var fallback = RandomSet(rng, legalNumbers, pickCount);
                 while (selectedKeys.Contains(LineKey(fallback)))
-                    fallback = RandomSet(rng, poolSize, pickCount);
+                    fallback = RandomSet(rng, legalNumbers, pickCount);
                 best = (fallback, LineScore(fs, fallback, scores, strategy),
                     FourSubsetKeys(fallback).Count(subset => !coveredFourSubsets.Contains(subset)),
                     FourSubsetKeys(fallback).Count(subset => coveredFourSubsets.Contains(subset)));
@@ -176,6 +179,21 @@ public static class PortfolioOptimizer
             if (keys.Add(LineKey(line))) lines.Add(line);
         }
         return lines;
+    }
+
+    private static bool HasAtLeastCombinations(int n, int k, int required) =>
+        CombinationCount(n, k) >= required;
+
+    private static long CombinationCount(int n, int k)
+    {
+        k = Math.Min(k, n - k);
+        long result = 1;
+        for (int i = 1; i <= k; i++)
+        {
+            result = result * (n - k + i) / i;
+            if (result > int.MaxValue) return int.MaxValue;
+        }
+        return result;
     }
 
     private static int[] RandomSet(Random rng, int poolSize, int pickCount)

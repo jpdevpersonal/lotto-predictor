@@ -41,4 +41,15 @@ public class PortfolioOptimizerTests
         Assert.All(history, draw => Assert.Equal(5, draw.Numbers.Length));
         Assert.Contains(history, draw => draw.Numbers.Any(number => number > 5));
     }
+
+    [Fact]
+    public void Coverage_portfolio_rejects_more_lines_than_the_legal_pool_can_supply()
+    {
+        var history = RandomHistory(60, 6, seed: 321);
+        var fs = FeatureCalculator.Compute(history, configuredPoolSize: 6);
+        var strategy = ScoringStrategy.Candidates[0];
+
+        Assert.Throws<InvalidOperationException>(() => PortfolioOptimizer.BuildCoveragePortfolio(
+            fs, PredictionEngine.ScoreNumbers(fs, strategy), strategy, lineCount: 2));
+    }
 }
