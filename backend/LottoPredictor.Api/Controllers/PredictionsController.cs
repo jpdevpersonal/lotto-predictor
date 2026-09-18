@@ -23,7 +23,7 @@ public class PredictionsController(IPredictionService predictions) : ControllerB
 
     [HttpGet("lines")]
     public async Task<ActionResult<PredictionLinesDto>> GetLines(
-        [FromQuery] int count = 50,
+        [FromQuery] int count = 1,
         [FromQuery] bool excludeLastDrawNumbers = false,
         CancellationToken ct = default)
         => Ok(await predictions.GenerateLinesAsync(count, excludeLastDrawNumbers, ct));

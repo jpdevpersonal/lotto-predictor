@@ -13,10 +13,12 @@ public class BacktesterTests
 
         foreach (var s in report.Strategies)
         {
-            Assert.Equal(100, s.Evaluated);
-            Assert.Equal(100, s.MatchCounts.Sum());
+            Assert.Equal(report.HoldoutEvaluated, s.Evaluated);
+            Assert.Equal(report.HoldoutEvaluated, s.MatchCounts.Sum());
         }
-        Assert.Equal(100, report.RandomSimulated.MatchCounts.Sum());
+        Assert.Equal(66, report.SelectionEvaluated);
+        Assert.Equal(34, report.HoldoutEvaluated);
+        Assert.Equal(report.HoldoutEvaluated, report.RandomSimulated.MatchCounts.Sum());
     }
 
     [Fact]
@@ -78,6 +80,37 @@ public class BacktesterTests
         Assert.Equal(1.0, dist.Sum(), 6);
         double mean = dist.Select((p, k) => p * k).Sum();
         Assert.Equal(36.0 / 59.0, mean, 6);
+        Assert.Equal(0.00046583, Backtester.FourPlusProbability(59, 6), 8);
+        Assert.Equal(0.00010667, Backtester.FourPlusProbability(50, 5), 8);
+    }
+
+    [Fact]
+    public void Wilson_interval_handles_zero_four_plus_hits()
+    {
+        var (low, high) = Backtester.WilsonInterval(0, 200);
+        Assert.Equal(0, low);
+        Assert.InRange(high, 0.01, 0.02);
+    }
+
+    [Fact]
+    public void Newly_eligible_pool_numbers_are_scoreable_before_ten_appearances()
+    {
+        var draws = Enumerable.Range(1, 160)
+            .Select(i => new DrawEvent(
+                i,
+                i,
+                i < 151 ? new DateOnly(2015, 10, 3) : new DateOnly(2015, 10, 17).AddDays(i - 151),
+                i < 151
+                    ? [1, 2, 3, 4, 5, 6]
+                    : [1, 2, 3, 4, 5, 50 + ((i - 151) % 10)]))
+            .ToList();
+
+        var fs = FeatureCalculator.Compute(
+            draws, configuredPoolSize: 59, poolExpansionDate: new DateOnly(2015, 10, 10));
+        var scores = PredictionEngine.ScoreNumbers(fs, ScoringStrategy.Candidates[0]);
+
+        Assert.Contains(50, scores.Keys);
+        Assert.Contains(59, scores.Keys);
     }
 
     [Fact]
@@ -102,6 +135,18 @@ public class BacktesterTests
         var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 100, warmup: 150);
         Assert.InRange(report.Best.AvgMatches, 5.0, 6.0);
         Assert.DoesNotContain("No measurable advantage", report.Verdict);
+    }
+
+    [Fact]
+    public void Best_strategy_is_selected_before_the_held_out_period()
+    {
+        var draws = RandomHistory(300, 59, seed: 12);
+        var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 90, warmup: 150);
+
+        Assert.Equal(60, report.SelectionEvaluated);
+        Assert.Equal(30, report.HoldoutEvaluated);
+        Assert.Equal(30, report.Best.Evaluated);
+        Assert.Contains("held-out", report.Verdict);
     }
 
     [Fact]

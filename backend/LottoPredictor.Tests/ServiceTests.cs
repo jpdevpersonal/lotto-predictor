@@ -103,6 +103,45 @@ public sealed class ServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AddDraw_rejects_a_date_before_the_latest_sequence()
+    {
+        SeedDraws(200);
+
+        var exception = await Assert.ThrowsAsync<ValidationFailedException>(() =>
+            _drawService.AddDrawAsync(new AddDrawRequest(
+                [5, 10, 15, 20, 25, 59], Date: "2020-01-01")));
+
+        Assert.Contains("before the latest", exception.Message);
+        Assert.Equal(200, await _drawService.CountAsync());
+    }
+
+    [Fact]
+    public async Task UpdateDraw_rejects_a_date_that_breaks_sequence_order()
+    {
+        SeedDraws(200);
+        var latest = (await _drawService.GetLatestAsync())!;
+
+        var exception = await Assert.ThrowsAsync<ValidationFailedException>(() =>
+            _drawService.UpdateDrawAsync(latest.Id, new UpdateDrawRequest(
+                latest.Numbers, Date: "2020-01-01")));
+
+        Assert.Contains("chronological neighbours", exception.Message);
+    }
+
+    [Fact]
+    public async Task Rebuilding_analysis_for_same_dataset_does_not_advance_generation()
+    {
+        SeedDraws(200);
+
+        var first = await _analysis.GetSnapshotAsync();
+        _analysis.Invalidate();
+        var second = await _analysis.GetSnapshotAsync();
+
+        Assert.Equal(first.Draws.Count, second.Draws.Count);
+        Assert.Equal(first.LearningGeneration, second.LearningGeneration);
+    }
+
+    [Fact]
     public async Task AddDrawRounds_stores_two_sequences_under_one_draw_number()
     {
         SeedDraws(200);
@@ -197,17 +236,18 @@ public sealed class ServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task DrawHistory_loads_100_by_default_and_all_only_when_requested()
+    public async Task DrawHistory_caps_each_response_at_200_items()
     {
-        SeedDraws(200);
+        SeedDraws(250);
 
-        var initial = await _drawService.GetDrawHistoryAsync();
-        var all = await _drawService.GetDrawHistoryAsync(loadAll: true);
+        var initial = await _drawService.GetDrawHistoryAsync(limit: 9999);
+        var next = await _drawService.GetDrawHistoryAsync(offset: 200, limit: 200);
 
-        Assert.Equal(100, initial.Items.Count);
-        Assert.Equal(200, initial.Total);
-        Assert.Equal(200, all.Items.Count);
-        Assert.Equal(200, all.Limit);
+        Assert.Equal(200, initial.Items.Count);
+        Assert.Equal(250, initial.Total);
+        Assert.Equal(200, initial.Limit);
+        Assert.Equal(50, next.Items.Count);
+        Assert.Equal(200, next.Offset);
     }
 
     [Fact]

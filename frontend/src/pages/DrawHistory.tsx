@@ -31,9 +31,9 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const load = useCallback(async (loadAll = false) => {
+  const load = useCallback(async () => {
     try {
-      setHistory(await api.drawHistory(loadAll));
+      setHistory(await api.drawHistory());
       setError("");
     } catch (loadError) {
       setError(
@@ -45,7 +45,7 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
   }, []);
 
   useEffect(() => {
-    void load(false);
+    void load();
   }, [load]);
 
   const beginEdit = (draw: DrawDto) => {
@@ -88,7 +88,7 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
         editDate,
       );
       setEditingId(null);
-      await load(showingAll);
+      await (showingAll ? loadAll() : load());
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -114,7 +114,7 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
       setRoundValues(emptyNumbers(lottery.mainNumberCount));
       setRoundBonus("");
       setShowAddRound(false);
-      await load(showingAll);
+      await (showingAll ? loadAll() : load());
     } catch (saveError) {
       setError(
         saveError instanceof Error ? saveError.message : "Failed to add round",
@@ -144,8 +144,21 @@ export default function DrawHistory({ lottery }: { lottery: LotteryProfile }) {
   const loadAll = async () => {
     setLoadingAll(true);
     try {
-      await load(true);
+      const pageSize = 200;
+      const firstPage = await api.drawHistory(0, pageSize);
+      const items = [...firstPage.items];
+      for (let offset = items.length; offset < firstPage.total; offset += pageSize) {
+        const page = await api.drawHistory(offset, pageSize);
+        items.push(...page.items);
+        if (page.items.length === 0) break;
+      }
+      setHistory({ items, total: firstPage.total, offset: 0, limit: items.length });
+      setError("");
       setShowingAll(true);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error ? loadError.message : "Failed to load complete history",
+      );
     } finally {
       setLoadingAll(false);
     }

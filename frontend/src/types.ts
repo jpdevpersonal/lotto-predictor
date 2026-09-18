@@ -114,11 +114,21 @@ export interface PredictionLineDto {
   numbers: number[];
   luckyStars: number[];
   score: number;
+  newFourSubsets: number;
+  sharedFourSubsets: number;
 }
 
 export interface PredictionLinesDto {
   strategyName: string;
   cutoffDrawNumber: number;
+  lineCount: number;
+  objective: string;
+  singleLineFourPlusProbability: number;
+  portfolioFourPlusProbability: number;
+  portfolioFourPlusCiLow: number;
+  portfolioFourPlusCiHigh: number;
+  randomDistinctPortfolioFourPlusProbability: number;
+  simulationTrials: number;
   lines: PredictionLineDto[];
 }
 
@@ -142,6 +152,10 @@ export interface StrategyBacktestDto {
   pct1: number;
   pct2: number;
   pct3Plus: number;
+  fourPlusHits: number;
+  fourPlusRate: number;
+  fourPlusCiLow: number;
+  fourPlusCiHigh: number;
   isBest: boolean;
   isLearned: boolean;
 }
@@ -157,6 +171,8 @@ export interface BacktestingDto {
   randomPct1: number;
   randomPct2: number;
   randomPct3Plus: number;
+  randomFourPlusProbability: number;
+  randomExpectedFourPlusHits: number;
   verdict: string;
 }
 

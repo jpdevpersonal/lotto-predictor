@@ -18,7 +18,7 @@ public interface IDrawService
     Task<IReadOnlyList<DrawDto>> GetDrawRoundsAsync(int drawNumber, CancellationToken ct = default);
     Task<IReadOnlyList<DrawDto>> GetDrawsOnDateAsync(DateOnly date, CancellationToken ct = default);
     Task<DrawHistoryDto> GetDrawHistoryAsync(
-        int offset = 0, int limit = 100, bool loadAll = false, CancellationToken ct = default);
+        int offset = 0, int limit = 100, CancellationToken ct = default);
     Task<DrawDto?> GetLatestAsync(CancellationToken ct = default);
     Task<int> CountAsync(CancellationToken ct = default);
     /// <summary>Validates and stores a new result, evaluates any outstanding predictions against it,
@@ -78,7 +78,7 @@ public class DrawService : IDrawService
     }
 
     public async Task<DrawHistoryDto> GetDrawHistoryAsync(
-        int offset = 0, int limit = 100, bool loadAll = false, CancellationToken ct = default)
+        int offset = 0, int limit = 100, CancellationToken ct = default)
     {
         offset = Math.Max(0, offset);
         limit = Math.Clamp(limit, 1, 200);
@@ -86,12 +86,10 @@ public class DrawService : IDrawService
         await using var db = await contextFactory.CreateDbContextAsync(ct);
         int total = await db.Draws.CountAsync(ct);
         var query = db.Draws.AsNoTracking().OrderByDescending(draw => draw.Sequence);
-        var items = loadAll
-            ? await query.ToListAsync(ct)
-            : await query.Skip(offset).Take(limit).ToListAsync(ct);
+        var items = await query.Skip(offset).Take(limit).ToListAsync(ct);
 
         return new DrawHistoryDto(
-            items.Select(ToDto).ToList(), total, loadAll ? 0 : offset, loadAll ? total : limit);
+            items.Select(ToDto).ToList(), total, offset, limit);
     }
 
     public async Task<DrawDto?> GetLatestAsync(CancellationToken ct = default)
@@ -205,7 +203,11 @@ public class DrawService : IDrawService
         if (request.DrawNumber.HasValue)
             draw.DrawNumber = request.DrawNumber.Value;
         if (request.Date is not null)
-            draw.Date = ParseDate(request.Date);
+        {
+            var updatedDate = ParseDate(request.Date);
+            await EnsureDateFitsSequenceAsync(db, draw.Sequence, updatedDate, ct);
+            draw.Date = updatedDate;
+        }
 
         var evaluatedPredictions = await db.Predictions
             .Include(prediction => prediction.Evaluations)
@@ -239,6 +241,14 @@ public class DrawService : IDrawService
         int maxDrawNumber = await db.Draws.MaxAsync(d => (int?)d.DrawNumber, ct) ?? 0;
 
         var drawDate = date is not null ? ParseDate(date) : DateOnly.FromDateTime(DateTime.UtcNow);
+        var latestDate = await db.Draws
+            .OrderByDescending(draw => draw.Sequence)
+            .Select(draw => (DateOnly?)draw.Date)
+            .FirstOrDefaultAsync(ct);
+        if (latestDate is DateOnly last && drawDate < last)
+            throw new ValidationFailedException([
+                $"Draw date {drawDate:yyyy-MM-dd} is before the latest recorded draw date {last:yyyy-MM-dd}. " +
+                "Backdated results must be imported in chronological order."]);
         var resolvedDrawNumber = drawNumber ?? maxDrawNumber + 1;
         var added = rounds.Select((numbers, index) =>
         {
@@ -282,6 +292,26 @@ public class DrawService : IDrawService
         if (!DateOnly.TryParse(date, out var parsed))
             throw new ValidationFailedException([$"'{date}' is not a valid date."]);
         return parsed;
+    }
+
+    private static async Task EnsureDateFitsSequenceAsync(
+        LottoDbContext db, int sequence, DateOnly date, CancellationToken ct)
+    {
+        var previousDate = await db.Draws
+            .Where(item => item.Sequence < sequence)
+            .OrderByDescending(item => item.Sequence)
+            .Select(item => (DateOnly?)item.Date)
+            .FirstOrDefaultAsync(ct);
+        var nextDate = await db.Draws
+            .Where(item => item.Sequence > sequence)
+            .OrderBy(item => item.Sequence)
+            .Select(item => (DateOnly?)item.Date)
+            .FirstOrDefaultAsync(ct);
+
+        if (previousDate is DateOnly previous && date < previous ||
+            nextDate is DateOnly next && date > next)
+            throw new ValidationFailedException([
+                "A corrected draw date must remain between the dates of its chronological neighbours."]);
     }
 
     private static IReadOnlyList<string> ValidateResult(

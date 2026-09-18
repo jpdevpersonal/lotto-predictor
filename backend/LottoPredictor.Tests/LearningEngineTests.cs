@@ -25,6 +25,16 @@ public class LearningEngineTests
     }
 
     [Fact]
+    public void Exact_binomial_tail_handles_rare_four_plus_events()
+    {
+        // One four-plus hit in a 67-draw UK Lotto holdout has a ~3% exact tail probability,
+        // not the much smaller normal-approximation value used previously.
+        double pValue = StatFunctions.BinomialUpperTail(67, 1, 0.00046583);
+        Assert.InRange(pValue, 0.03, 0.031);
+        Assert.Equal(1.0, StatFunctions.BinomialUpperTail(67, 0, 0.00046583), 12);
+    }
+
+    [Fact]
     public void Fair_data_yields_small_bias_z_and_uniform_chi_square()
     {
         var draws = RandomHistory(600, 59, seed: 11);
@@ -65,7 +75,7 @@ public class LearningEngineTests
         var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 150, warmup: 200);
 
         var ensemble = report.Strategies.Single(s => s.Strategy.Name == Backtester.EnsembleName);
-        Assert.Equal(150, ensemble.MatchCounts.Sum());
+        Assert.Equal(report.HoldoutEvaluated, ensemble.MatchCounts.Sum());
         Assert.Equal(1.0, report.HedgeWeights.Values.Sum(), 6);
         Assert.All(report.HedgeWeights.Values, w => Assert.InRange(w, 0.0, 1.0));
     }

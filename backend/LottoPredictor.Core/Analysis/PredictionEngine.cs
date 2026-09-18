@@ -21,9 +21,7 @@ public static class PredictionEngine
     /// <summary>Per-number scores under a strategy. Key = ball number.</summary>
     public static Dictionary<int, double> ScoreNumbers(FeatureSet fs, ScoringStrategy s)
     {
-        var eligible = fs.Numbers.Where(f => f.EligibleDraws >= 10).ToArray();
-        if (eligible.Length < fs.PickCount)
-            eligible = fs.Numbers.Where(f => f.EligibleDraws > 0).ToArray();
+        var eligible = fs.Numbers.Where(f => f.Number <= fs.Pool.NextPoolSize).ToArray();
 
         var zFreq = ZScores(eligible, f => f.FreqRateShrunk);
         var zRecent = ZScores(eligible, f => f.RecentRateShrunk);

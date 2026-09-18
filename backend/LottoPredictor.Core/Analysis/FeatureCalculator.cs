@@ -8,11 +8,13 @@ public static class FeatureCalculator
     public static FeatureSet Compute(
         IReadOnlyList<DrawEvent> draws,
         int? configuredPoolSize = null,
-        DateOnly? poolExpansionDate = null)
+        DateOnly? poolExpansionDate = null,
+        DateOnly? targetDrawDate = null,
+        IReadOnlyList<PoolRule>? ruleEras = null)
     {
         if (draws.Count == 0) throw new InvalidOperationException("Cannot compute features with no draws.");
 
-        var pool = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
+        var pool = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate, targetDrawDate, ruleEras);
         int p = pool.PoolSize;
         int n = draws.Count;
         int pickCount = draws[0].Numbers.Length;
@@ -23,9 +25,10 @@ public static class FeatureCalculator
         for (int i = 0; i < draws.Count; i++)
         {
             var numbers = draws[i].Numbers;
-            if (numbers.Any(number => number < 1 || number > p))
+            int poolAtDraw = pool.PoolAt(i);
+            if (numbers.Any(number => number < 1 || number > poolAtDraw))
                 throw new InvalidOperationException(
-                    $"Draw at sequence {draws[i].Sequence} contains a ball outside pool 1-{p}.");
+                    $"Draw at sequence {draws[i].Sequence} contains a ball outside pool 1-{poolAtDraw}.");
             if (numbers.Distinct().Count() != numbers.Length)
                 throw new InvalidOperationException(
                     $"Draw at sequence {draws[i].Sequence} contains duplicate balls.");
@@ -113,18 +116,19 @@ public static class FeatureCalculator
             double freqRate = eligible > 0 ? (double)total / eligible : 0;
             double rate50 = w50 > 0 ? (double)c50 / w50 : 0;
 
-            // Fair-machine expectation, era aware: pool was 49 before the switch, PoolSize after.
-            int p1 = p > 49 ? 49 : p;
-            int era1 = Math.Max(0, Math.Min(pool.Era2StartIndex, n) - eligibleFrom);
-            int era2 = Math.Max(0, n - Math.Max(pool.Era2StartIndex, eligibleFrom));
-            double q1 = (double)pickCount / p1, q2 = (double)pickCount / p;
-            double expected = era1 * q1 + era2 * q2;
-            double variance = era1 * q1 * (1 - q1) + era2 * q2 * (1 - q2);
+            double expected = 0;
+            double variance = 0;
+            for (int drawIndex = eligibleFrom; drawIndex < n; drawIndex++)
+            {
+                double q = (double)pickCount / pool.PoolAt(drawIndex);
+                expected += q;
+                variance += q * (1 - q);
+            }
             double biasZ = variance > 1e-9 ? (total - expected) / Math.Sqrt(variance) : 0;
 
             // Bayesian shrinkage toward the fair rate: ~20 pseudo-draws of prior evidence.
             const double shrink = 20.0;
-            double qNow = (double)pickCount / pool.PoolAt(n - 1);
+            double qNow = (double)pickCount / pool.NextPoolSize;
             double qBar = eligible > 0 ? expected / eligible : qNow;
             double freqShrunk = (total + shrink * qBar) / (Math.Max(0, eligible) + shrink);
             double recentShrunk = recentWindows.Length > 0

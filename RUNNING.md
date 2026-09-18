@@ -8,7 +8,7 @@
   logic lives in the `LottoPredictor.Core` class library, so the DB provider can be swapped for
   SQL Server without touching the logic.
 - **Frontend**: **React 18 + TypeScript** on **Vite**, plain CSS, no UI framework.
-- **Tests**: xUnit (70 tests).
+- **Tests**: xUnit.
 
 ## Prerequisites
 
@@ -31,27 +31,30 @@ Start both services with one command:
 ./run.sh
 ```
 
-The launcher installs frontend dependencies when needed, waits for the API, starts the UI at
-http://localhost:5173, and stops both services when you press Ctrl+C. To run the services in
-separate terminals instead, use the commands below.
+The launcher installs frontend dependencies when needed, creates a per-run local mutation key,
+passes it to both services, waits for the API, starts the UI at http://localhost:5173, and stops
+both services when you press Ctrl+C. To run the services in separate terminals instead, use the
+commands below.
 
 **Terminal 1 — API** (first run creates both databases and imports their CSV histories):
 
 ```bash
 cd backend/LottoPredictor.Api
-dotnet run --launch-profile http
+dotnet run --launch-profile http -- --MutationApiKey=replace-with-local-dev-key
 ```
 
 → http://localhost:5080 — the log shows "Analysis ready: 3226 draws, pool 1-59, learning
-generation N, active strategy '…'" plus the backtest verdict. Each startup (and each new draw)
-runs one learning generation, so the first request after adding a result takes a few seconds
-while the walk-forward backtest recomputes.
+generation N, active strategy '…'" plus the backtest verdict. A new optimiser generation is
+created only for a new dataset size; restarting the app or refreshing analysis for unchanged data
+reuses the existing logged generation.
 
 **Terminal 2 — UI**:
 
 ```bash
 cd frontend
 npm install     # first time only
+cp .env.example .env.local
+# edit .env.local so VITE_MUTATION_API_KEY matches the backend MutationApiKey
 npm run dev
 ```
 
@@ -68,6 +71,10 @@ dotnet test
 
 - Use the **Lottery** selector in the header to switch between UK National Lottery and
   EuroMillions. Every API request is routed to the selected lottery's separate database.
+- POST, PUT, PATCH, and DELETE requests under `/api` require `X-Api-Key`. The backend expected
+  value comes from `MutationApiKey`; the frontend reads the matching value from
+  `VITE_MUTATION_API_KEY`. Leave real local secrets in untracked files or shell environment
+  variables only.
 - UK result entry requires two rounds of six numbers with optional bonus balls. EuroMillions
   requires one round of five numbers plus two Lucky Stars. Both games support prediction,
   candidate lines, history, inline correction, statistics, learning, and backtesting.
@@ -83,6 +90,25 @@ dotnet test
   `dotnet run --launch-profile http -- --CsvImportPath=/path/to/file.csv`
 - To point at a different EuroMillions CSV:
   `dotnet run --launch-profile http -- --EuroMillionsCsvImportPath=/path/to/euromillions.csv`
+- The dashboard portfolio control chooses fixed `K` lines, defaulting to `1`. The reported primary
+  objective is `P(at least one of K fixed lines matches at least four main numbers)`. Main-number
+  matches are evaluated per line; four numbers scattered across different lines are not counted as
+  a hit. Bonus balls and Lucky Stars are shown separately.
+- To reproduce the revised comparison, start the API and request the same `count` for each supported
+  game:
+
+```bash
+curl -H 'X-Lottery: uk-lotto' 'http://localhost:5080/api/backtesting'
+curl -H 'X-Lottery: uk-lotto' 'http://localhost:5080/api/predictions/lines?count=50'
+curl -H 'X-Lottery: euromillions' 'http://localhost:5080/api/backtesting'
+curl -H 'X-Lottery: euromillions' 'http://localhost:5080/api/predictions/lines?count=50'
+```
+
+  The backtesting response contains exact single-line random four-plus probability, expected random
+  four-plus hits, observed strategy hit counts/rates, and confidence intervals. The lines response
+  contains coverage-optimised portfolio probability and a matched random-distinct portfolio baseline
+  estimated with reproducible simulation. These comparisons do not assume historical results contain
+  a predictive advantage.
 - Recommended VS Code extensions: **C# Dev Kit** for backend debugging (F5 works against the
   `http` launch profile); the built-in TypeScript support handles the frontend.
 - The API port is pinned to 5080 in

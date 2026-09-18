@@ -36,8 +36,8 @@ public class AnalysisOptions
 
 /// <summary>Owns the derived state (features + walk-forward backtest + active strategy choice).
 /// Everything is recomputed automatically whenever a draw is added; nothing needs manual
-/// retraining. The active strategy is simply the candidate with the best walk-forward
-/// average matches on the current dataset.</summary>
+/// retraining. The active strategy is selected by the earlier part of the walk-forward window
+/// and its displayed performance comes only from the later chronological holdout.</summary>
 public class AnalysisService : IAnalysisService
 {
     private sealed class ProfileAnalysisState
@@ -86,26 +86,33 @@ public class AnalysisService : IAnalysisService
                 .ToList();
 
             var features = FeatureCalculator.Compute(
-                events, lottery.MainPoolSize, lottery.MainPoolExpansionDate);
+                events, lottery.MainPoolSize, lottery.MainPoolExpansionDate,
+                ruleEras: lottery.MainPoolRules);
             var luckyStarEvents = !lottery.BonusSharesMainPool
                 ? draws.Select(d => new DrawEvent(
                     d.Sequence, d.DrawNumber, d.Date, d.BonusNumbers())).ToList()
                 : null;
             var luckyStarFeatures = luckyStarEvents is { Count: > 0 }
-                ? FeatureCalculator.Compute(luckyStarEvents, lottery.BonusPoolSize)
+                ? FeatureCalculator.Compute(luckyStarEvents, lottery.BonusPoolSize,
+                    ruleEras: lottery.BonusPoolRules)
                 : null;
 
-            // Learning step: seed the optimizer with previously learned strategies (persisted)
-            // plus the hand-written candidates, generate one generation of new candidates, and
-            // let the same leak-free walk-forward backtest judge everything together.
+            // Learning step: only advance the optimizer when this dataset size has not already
+            // been analysed. Rebuilding the snapshot for the same data must be idempotent.
             var learned = await db.LearnedStrategies.AsNoTracking()
                 .OrderByDescending(s => s.RecencyWeightedAvg)
                 .ToListAsync(ct);
-            int generation = (learned.Count > 0 ? learned.Max(s => s.Generation) : 0) + 1;
+            int drawCount = events.Count;
+            bool alreadyAnalysed = await db.StrategyPerformanceLogs.AsNoTracking()
+                .AnyAsync(log => log.DrawCount == drawCount, ct);
+            int previousGeneration = learned.Count > 0 ? learned.Max(s => s.Generation) : 0;
+            int generation = alreadyAnalysed ? previousGeneration : previousGeneration + 1;
 
             var learnedStrategies = learned.Select(StrategyOptimizer.ToStrategy).ToList();
             var seeds = learnedStrategies.Concat(ScoringStrategy.Candidates).ToList();
-            var newCandidates = StrategyOptimizer.GenerateCandidates(seeds, generation);
+            var newCandidates = alreadyAnalysed
+                ? []
+                : StrategyOptimizer.GenerateCandidates(seeds, generation);
 
             var allStrategies = ScoringStrategy.Candidates
                 .Concat(learnedStrategies)
@@ -118,7 +125,8 @@ public class AnalysisService : IAnalysisService
                 configuredPoolSize: lottery.MainPoolSize,
                 poolExpansionDate: lottery.MainPoolExpansionDate);
 
-            await PersistLearningAsync(db, backtest, generation, events.Count, ct);
+            if (!alreadyAnalysed)
+                await PersistLearningAsync(db, backtest, generation, drawCount, ct);
 
             state.Snapshot = new AnalysisSnapshot
             {
@@ -150,16 +158,18 @@ public class AnalysisService : IAnalysisService
         var handWritten = ScoringStrategy.Candidates.Select(s => s.Name).ToHashSet();
         handWritten.Add(Backtester.EnsembleName); // ensemble is adaptive, not a weight vector to keep
 
-        // Survivors: learned/candidate strategies that outperform the best hand-written one
-        // on recency-weighted matches, capped so weak lineages die out.
+        // Survivors are ranked on the same four-plus objective used to select the active
+        // strategy. Average matches are a tie-breaker only, so a lineage cannot survive merely
+        // by improving a different metric.
         double handWrittenBest = backtest.Strategies
             .Where(r => handWritten.Contains(r.Strategy.Name))
-            .Max(r => r.RecencyWeightedAvg);
+            .Max(r => r.FourPlusRate);
         var survivors = backtest.Strategies
             .Where(r => !handWritten.Contains(r.Strategy.Name))
-            .OrderByDescending(r => r.RecencyWeightedAvg)
+            .OrderByDescending(r => r.FourPlusRate)
+            .ThenByDescending(r => r.RecencyWeightedAvg)
             .Take(StrategyOptimizer.MaxLearnedKept)
-            .Where(r => r.RecencyWeightedAvg >= handWrittenBest - 0.05)
+            .Where(r => r.FourPlusRate >= handWrittenBest)
             .ToList();
 
         var existing = await db.LearnedStrategies.ToListAsync(ct);

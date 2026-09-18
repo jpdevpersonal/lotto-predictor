@@ -60,4 +60,49 @@ public static class StatFunctions
         double z = (Math.Cbrt(chiSquare / df) - (1.0 - t)) / Math.Sqrt(t);
         return Math.Clamp(1.0 - NormalCdf(z), 0.0, 1.0);
     }
+
+    /// <summary>Exact one-sided P(X &gt;= hits) for X ~ Binomial(trials, probability).
+    /// This remains reliable when the expected number of events is far below five, where a
+    /// normal approximation is unsuitable.</summary>
+    public static double BinomialUpperTail(int trials, int hits, double probability)
+    {
+        if (trials < 0) throw new ArgumentOutOfRangeException(nameof(trials));
+        if (hits <= 0) return 1.0;
+        if (hits > trials || probability <= 0) return 0.0;
+        if (probability >= 1) return 1.0;
+
+        double term = Math.Exp(LogChoose(trials, hits) + hits * Math.Log(probability) +
+            (trials - hits) * Log1p(-probability));
+        double sum = term;
+        for (int k = hits + 1; k <= trials; k++)
+        {
+            term *= (double)(trials - k + 1) / k * probability / (1.0 - probability);
+            sum += term;
+        }
+        return Math.Clamp(sum, 0.0, 1.0);
+    }
+
+    private static double LogChoose(int n, int k)
+    {
+        k = Math.Min(k, n - k);
+        double result = 0;
+        for (int i = 1; i <= k; i++)
+            result += Math.Log(n - k + i) - Math.Log(i);
+        return result;
+    }
+
+    private static double Log1p(double x)
+    {
+        if (Math.Abs(x) > 1e-4)
+            return Math.Log(1.0 + x);
+
+        double term = x;
+        double sum = 0;
+        for (int n = 1; n <= 12; n++)
+        {
+            sum += (n % 2 == 1 ? term : -term) / n;
+            term *= x;
+        }
+        return sum;
+    }
 }

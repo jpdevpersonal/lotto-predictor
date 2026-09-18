@@ -16,9 +16,8 @@ public class DrawsController(IDrawService draws) : ControllerBase
     public async Task<ActionResult<DrawHistoryDto>> GetHistory(
         [FromQuery] int offset = 0,
         [FromQuery] int limit = 100,
-        [FromQuery] bool loadAll = false,
         CancellationToken ct = default)
-        => Ok(await draws.GetDrawHistoryAsync(offset, limit, loadAll, ct));
+        => Ok(await draws.GetDrawHistoryAsync(offset, limit, ct));
 
     [HttpGet("latest")]
     public async Task<ActionResult<DrawDto>> GetLatest(CancellationToken ct = default)

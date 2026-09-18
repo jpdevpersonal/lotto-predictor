@@ -61,6 +61,7 @@ public class StatisticsService(
         if (await draws.CountAsync(ct) == 0)
             return new BacktestingDto(
                 0, 0, [], "Waiting for draw history", 0, 0, 0, 0, 0, 0,
+                0, 0,
                 "Add or import draw history to start backtesting.");
 
         var snapshot = await analysis.GetSnapshotAsync(ct);
@@ -83,6 +84,8 @@ public class StatisticsService(
             Pct(randomSim.MatchCounts, 1, randomSim.Evaluated),
             Pct(randomSim.MatchCounts, 2, randomSim.Evaluated),
             PctAtLeast(randomSim.MatchCounts, 3, randomSim.Evaluated),
+            Math.Round(report.RandomFourPlusProbability, 8),
+            Math.Round(report.RandomExpectedFourPlusHits, 4),
             report.Verdict);
     }
 
@@ -97,6 +100,10 @@ public class StatisticsService(
         Pct(s.MatchCounts, 1, s.Evaluated),
         Pct(s.MatchCounts, 2, s.Evaluated),
         PctAtLeast(s.MatchCounts, 3, s.Evaluated),
+        s.FourPlusHits,
+        Math.Round(s.FourPlusRate, 8),
+        Math.Round(s.FourPlusCiLow, 8),
+        Math.Round(s.FourPlusCiHigh, 8),
         isBest,
         s.Strategy.Name.StartsWith("learned-") || s.Strategy.Name == Backtester.EnsembleName);
 

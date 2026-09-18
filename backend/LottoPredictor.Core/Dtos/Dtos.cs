@@ -78,11 +78,25 @@ public record PredictionDto(
     IReadOnlyList<PredictionEvaluationDto> Evaluations,
     IReadOnlyList<NumberExplanationDto>? Explanation);
 
-public record PredictionLineDto(int Rank, int[] Numbers, int[] LuckyStars, double Score);
+public record PredictionLineDto(
+    int Rank,
+    int[] Numbers,
+    int[] LuckyStars,
+    double Score,
+    int NewFourSubsets,
+    int SharedFourSubsets);
 
 public record PredictionLinesDto(
     string StrategyName,
     int CutoffDrawNumber,
+    int LineCount,
+    string Objective,
+    double SingleLineFourPlusProbability,
+    double PortfolioFourPlusProbability,
+    double PortfolioFourPlusCiLow,
+    double PortfolioFourPlusCiHigh,
+    double RandomDistinctPortfolioFourPlusProbability,
+    int SimulationTrials,
     IReadOnlyList<PredictionLineDto> Lines);
 
 public record BestOfLinesDto(
@@ -135,6 +149,10 @@ public record StrategyBacktestDto(
     double Pct1,
     double Pct2,
     double Pct3Plus,
+    int FourPlusHits,
+    double FourPlusRate,
+    double FourPlusCiLow,
+    double FourPlusCiHigh,
     bool IsBest,
     bool IsLearned);
 
@@ -149,6 +167,8 @@ public record BacktestingDto(
     double RandomPct1,
     double RandomPct2,
     double RandomPct3Plus,
+    double RandomFourPlusProbability,
+    double RandomExpectedFourPlusHits,
     string Verdict);
 
 public record LearnedStrategyDto(

@@ -81,8 +81,8 @@ public class RealCsvIntegrationTests
         var events = LoadEvents();
         var report = Backtester.Run(events, ScoringStrategy.Candidates, evalWindow: 200, warmup: 150);
 
-        Assert.Equal(200, report.Best.Evaluated);
-        Assert.All(report.Strategies, s => Assert.Equal(200, s.MatchCounts.Sum()));
+        Assert.Equal(report.HoldoutEvaluated, report.Best.Evaluated);
+        Assert.All(report.Strategies, s => Assert.Equal(report.HoldoutEvaluated, s.MatchCounts.Sum()));
 
         // Sanity bounds: nobody legitimately averages anywhere near 6/6 on a real lottery.
         Assert.InRange(report.Best.AvgMatches, 0, 2.0);

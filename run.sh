@@ -9,6 +9,7 @@ API_URL="http://localhost:5080"
 UI_URL="http://localhost:5173"
 API_PID=""
 UI_PID=""
+MUTATION_API_KEY="${MUTATION_API_KEY:-}"
 
 cleanup() {
     trap - EXIT INT TERM
@@ -77,10 +78,20 @@ if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
     npm --prefix "$FRONTEND_DIR" install
 fi
 
+if [[ -z "$MUTATION_API_KEY" ]]; then
+    if command -v openssl >/dev/null 2>&1; then
+        MUTATION_API_KEY="$(openssl rand -hex 32)"
+    elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+        MUTATION_API_KEY="$(tr -d '-' </proc/sys/kernel/random/uuid)"
+    else
+        MUTATION_API_KEY="local-dev-$(date +%s)-$$"
+    fi
+fi
+
 trap cleanup EXIT INT TERM
 
 printf 'Starting API at %s...\n' "$API_URL"
-dotnet run --project "$API_DIR" --launch-profile http &
+dotnet run --project "$API_DIR" --launch-profile http -- --MutationApiKey="$MUTATION_API_KEY" &
 API_PID=$!
 
 printf 'Waiting for API to be ready...\n'
@@ -97,6 +108,7 @@ if ! curl --silent --fail "$API_URL/api/draws/latest" >/dev/null; then
 fi
 
 printf 'Starting frontend at %s...\n' "$UI_URL"
+export VITE_MUTATION_API_KEY="$MUTATION_API_KEY"
 npm --prefix "$FRONTEND_DIR" run dev &
 UI_PID=$!
 

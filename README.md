@@ -15,6 +15,9 @@ Both services:
 ./run.sh                              # UI: http://localhost:5173
 ```
 
+The launcher creates a per-run local mutation key automatically and passes it to both services. If
+you start the API and frontend in separate terminals, configure the matching keys manually as below.
+
 Backend (imports both histories on first run and creates separate SQLite databases):
 
 ```bash
@@ -29,6 +32,11 @@ cd frontend
 npm install
 npm run dev                          # http://localhost:5173
 ```
+
+Mutating API calls are protected by a shared local key. Set the backend key with configuration
+(`MutationApiKey`, `MutationApiKey=...`, or `--MutationApiKey=...`) and set the matching frontend
+value in `frontend/.env.local` as `VITE_MUTATION_API_KEY=...`. Do not store a real key in git;
+use [frontend/.env.example](frontend/.env.example) as the template.
 
 Tests:
 
@@ -79,10 +87,10 @@ dotnet test
    ensemble**, and for a seeded random baseline. The strategy (or ensemble) with the best
    **recency-weighted** walk-forward average (exponential decay, half-life 50 draws) becomes the
    active strategy.
-4. The verdict compares the best strategy against the analytic random expectation (36/59 ≈ 0.61
-   matches) using a **Bonferroni-corrected** significance band — picking the best of N tested
-   strategies inflates apparent skill, so the noise band widens with N — and states plainly when
-   the difference is within statistical noise.
+4. The verdict compares the strategy selected on earlier walk-forward draws against the untouched
+  chronological holdout using an **exact one-sided binomial test** for the four-plus objective,
+  while still reporting average matches against the analytic random expectation (36/59 ≈ 0.61
+  matches). It states plainly when the observed sparse-hit rate is within statistical noise.
 
 ### How learning works
 
@@ -123,20 +131,23 @@ Saved predictions and candidate lines include both the main-number and Lucky Sta
 | Endpoint | Description |
 |---|---|
 | `GET /api/draws?limit=` | Recent draws (newest first) |
-| `GET /api/draws/history?limit=100&loadAll=false` | Newest 100 rounds; set `loadAll=true` only for the complete history |
+| `GET /api/draws/history?offset=0&limit=100` | Paged draw history (newest first) |
 | `GET /api/draws/latest` | Latest draw |
-| `POST /api/draws` | Add one result (compatibility endpoint) `{ "numbers": [n1..n6] }` |
-| `POST /api/draws/rounds` | Atomically add two rounds `{ "rounds": [[n1..n6], [n1..n6]] }` |
-| `POST /api/draws/latest/round` | Add round 2 when the newest draw has only one round |
-| `PUT /api/draws/{id}` | Correct a stored round's numbers `{ "numbers": [n1..n6] }` |
+| `POST /api/draws` | Authenticated: add one result (compatibility endpoint) `{ "numbers": [n1..n6] }` |
+| `POST /api/draws/rounds` | Authenticated: atomically add two rounds `{ "rounds": [[n1..n6], [n1..n6]] }` |
+| `POST /api/draws/latest/round` | Authenticated: add round 2 when the newest draw has only one round |
+| `PUT /api/draws/{id}` | Authenticated: correct a stored round's numbers `{ "numbers": [n1..n6] }` |
 | `GET /api/predictions/latest` | Latest prediction with explanation |
-| `POST /api/predictions/generate` | Generate and store a prediction |
+| `POST /api/predictions/generate` | Authenticated: generate and store a prediction |
 | `GET /api/predictions/history` | Prediction history with match results |
 | `GET /api/statistics` | Per-number and combination-level statistics |
 | `GET /api/backtesting` | Walk-forward results, random baseline, verdict |
 | `GET /api/learning` | Learning generation, learned strategies, hedge weights, uniformity test, performance history |
 
-All endpoints accept `X-Lottery: uk-lotto` or `X-Lottery: euromillions`.
+All endpoints accept `X-Lottery: uk-lotto`, `X-Lottery: euromillions`, or `X-Lottery: set-for-life`.
+POST, PUT, PATCH, and DELETE requests under `/api` also require `X-Api-Key`. If the server has no
+`MutationApiKey` configured, mutation requests return `503`; missing or invalid keys return `401`
+or `403`. GET endpoints and CORS preflight requests do not require the mutation key.
 
 ## Structure
 

@@ -62,6 +62,30 @@ public class EuroMillionsTests
         Assert.All(starPrediction.Numbers, number => Assert.InRange(number, 1, 12));
     }
 
+        [Fact]
+        public void Lucky_star_pool_rules_are_date_effective()
+        {
+            var starEvents = new List<DrawEvent>();
+            for (int i = 1; i <= 20; i++)
+                starEvents.Add(new DrawEvent(i, i, new DateOnly(2010, 1, 1), new[] { 1, 9 }));
+            for (int i = 21; i <= 40; i++)
+                starEvents.Add(new DrawEvent(i, i, new DateOnly(2012, 1, 1), new[] { 10, 11 }));
+            for (int i = 41; i <= 60; i++)
+                starEvents.Add(new DrawEvent(i, i, new DateOnly(2017, 1, 1), new[] { 11, 12 }));
+
+            var fs = FeatureCalculator.Compute(
+                starEvents,
+                configuredPoolSize: 12,
+                ruleEras: LotteryProfile.EuroMillions.BonusPoolRules);
+
+            Assert.Equal(60, fs.For(9).EligibleDraws);
+            Assert.Equal(40, fs.For(10).EligibleDraws);
+            Assert.Equal(20, fs.For(12).EligibleDraws);
+            Assert.Equal(9, fs.Pool.PoolAt(0));
+            Assert.Equal(11, fs.Pool.PoolAt(20));
+            Assert.Equal(12, fs.Pool.PoolAt(40));
+        }
+
     [Fact]
     public async Task Draw_service_stores_one_round_with_two_lucky_stars()
     {

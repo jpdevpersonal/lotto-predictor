@@ -33,6 +33,10 @@ function Balls({
   );
 }
 
+function formatPct(value: number) {
+  return `${(value * 100).toFixed(value < 0.001 ? 4 : 2)}%`;
+}
+
 export default function Dashboard({
   lottery,
   onAddResult,
@@ -52,6 +56,7 @@ export default function Dashboard({
   const [bestOf, setBestOf] = useState<BestOfLinesDto | null>(null);
   const [bestLoading, setBestLoading] = useState(false);
   const [excludeLastDrawNumbers, setExcludeLastDrawNumbers] = useState(false);
+  const [portfolioSize, setPortfolioSize] = useState(1);
 
   const load = useCallback(async () => {
     try {
@@ -96,7 +101,7 @@ export default function Dashboard({
     setLinesLoading(true);
     setBestOf(null);
     try {
-      setLines(await api.predictionLines(50, excludeLastDrawNumbers));
+      setLines(await api.predictionLines(portfolioSize, excludeLastDrawNumbers));
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to generate lines");
@@ -197,6 +202,20 @@ export default function Dashboard({
             />
             Exclude last draw numbers from this prediction
           </label>
+          <label className="prediction-option portfolio-size">
+            Lines K
+            <input
+              type="number"
+              min={1}
+              max={200}
+              value={portfolioSize}
+              onChange={(event) =>
+                setPortfolioSize(
+                  Math.max(1, Math.min(200, Number(event.target.value) || 1)),
+                )
+              }
+            />
+          </label>
           <button onClick={generate} disabled={generating}>
             {generating ? "Generating…" : "Generate Prediction"}
           </button>
@@ -205,7 +224,7 @@ export default function Dashboard({
             onClick={loadLines}
             disabled={linesLoading}
           >
-            {linesLoading ? "Generating…" : "Generate 50 Lines"}
+            {linesLoading ? "Generating…" : `Generate ${portfolioSize} Line${portfolioSize === 1 ? "" : "s"}`}
           </button>
           <button className="secondary" onClick={onAddResult}>
             Add New Result
@@ -217,18 +236,22 @@ export default function Dashboard({
         <section>
           <div className="section-heading">
             <div>
-              <h2>Top 50 lines</h2>
+              <h2>Fixed portfolio</h2>
               <p className="muted">
-                The 50 best-scoring lines from strategy{" "}
-                <strong>{lines.strategyName}</strong> after draw #
-                {lines.cutoffDrawNumber}. Playing many lines is the only
-                reliable way to raise the chance of a 3+ match (roughly 60%
-                across 50 lines vs ~2% for one). Shown on screen only — not
-                saved.
+                Fixed portfolio of <strong>K={lines.lineCount}</strong> lines
+                from strategy <strong>{lines.strategyName}</strong> after draw #
+                {lines.cutoffDrawNumber}. Objective: {lines.objective}.
+              </p>
+              <p className="verdict compact">
+                Single-line 4+ probability under fair draw: {formatPct(lines.singleLineFourPlusProbability)}.
+                Portfolio estimate: {formatPct(lines.portfolioFourPlusProbability)}
+                {" "}(95% CI {formatPct(lines.portfolioFourPlusCiLow)}-{formatPct(lines.portfolioFourPlusCiHigh)})
+                from {lines.simulationTrials.toLocaleString()} simulations; random distinct K-line estimate:
+                {" "}{formatPct(lines.randomDistinctPortfolioFourPlusProbability)}.
               </p>
             </div>
             <button onClick={loadBestOf} disabled={bestLoading}>
-              {bestLoading ? "Computing…" : "Compute Best-of-50"}
+              {bestLoading ? "Computing…" : "Show Consensus"}
             </button>
           </div>
 
@@ -238,7 +261,7 @@ export default function Dashboard({
                 Best-of-50 consensus{" "}
                 <strong>
                   — the {lottery.mainNumberCount} numbers appearing most across
-                  all 50 lines
+                  all {lines.lineCount} lines
                 </strong>
               </p>
               <div className="balls">
@@ -261,7 +284,7 @@ export default function Dashboard({
               )}
               <p className="muted">
                 Frequency shows how many of the {bestOf.linesConsidered} lines
-                include each number. On-screen only — not stored or evaluated.
+                include each number. It is descriptive only, not higher confidence.
               </p>
             </div>
           )}
@@ -276,6 +299,9 @@ export default function Dashboard({
                 )}
                 <span className="line-score" title="Model line score">
                   {line.score.toFixed(3)}
+                </span>
+                <span className="line-score" title="New/shared four-number subsets">
+                  +{line.newFourSubsets}/{line.sharedFourSubsets}
                 </span>
               </div>
             ))}
@@ -341,6 +367,8 @@ export default function Dashboard({
                 <th>1 match</th>
                 <th>2 match</th>
                 <th>3+ match</th>
+                <th>4+ hits</th>
+                <th>4+ rate</th>
               </tr>
             </thead>
             <tbody>
@@ -357,6 +385,10 @@ export default function Dashboard({
                   <td>{s.pct1}%</td>
                   <td>{s.pct2}%</td>
                   <td>{s.pct3Plus}%</td>
+                  <td>{s.fourPlusHits}</td>
+                  <td title={`95% CI ${formatPct(s.fourPlusCiLow)}-${formatPct(s.fourPlusCiHigh)}`}>
+                    {formatPct(s.fourPlusRate)}
+                  </td>
                 </tr>
               ))}
               <tr className="baseline">
@@ -367,12 +399,15 @@ export default function Dashboard({
                 <td>{backtest.randomPct1}%</td>
                 <td>{backtest.randomPct2}%</td>
                 <td>{backtest.randomPct3Plus}%</td>
+                <td>{backtest.randomExpectedFourPlusHits.toFixed(3)} exp.</td>
+                <td>{formatPct(backtest.randomFourPlusProbability)}</td>
               </tr>
               <tr className="baseline">
                 <td>random baseline (theoretical)</td>
                 <td>{backtest.randomExpectedMatches.toFixed(4)}</td>
-                <td colSpan={5} className="muted">
-                  expected matches for uniform random picks
+                <td colSpan={7} className="muted">
+                  exact single-line random 4+ probability: {formatPct(backtest.randomFourPlusProbability)};
+                  expected 4+ hits: {backtest.randomExpectedFourPlusHits.toFixed(4)}
                 </td>
               </tr>
             </tbody>
