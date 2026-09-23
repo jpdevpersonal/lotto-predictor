@@ -1,0 +1,16 @@
+For the goal of getting at least four main-number matches, use the app as a coverage tool—not as a source of a single “best” line.
+Choose UK Lotto if you can choose the game. A single 6/59 line has a much better four-plus chance than a EuroMillions 5/50 line (roughly 1 in 2,147 vs 1 in 9,375).
+
+On the Dashboard, set Lines K to the exact number of lines you can afford, then choose Generate K Lines. Play every line it returns for that draw.
+
+Prefer a modest multi-line portfolio, such as 5–20 lines, rather than one line. The portfolio builder explicitly aims to reduce shared four-number subsets, increasing the chance that at least one of your lines reaches four matches.
+
+Do not use “Best of Lines” as your ticket. It is a consensus display, not the coverage-optimised portfolio.
+
+Leave “Exclude last draw numbers” off. It is a preference constraint, not evidence-based; it restricts coverage and does not improve fair-draw odds.
+
+Update the latest result before generating lines, and look at the backtest verdict. If it says no measurable advantage over random, treat the model’s ranking as an organising tool only—the coverage benefit comes from buying distinct lines, not from a proven ability to predict balls.
+
+Set a fixed spend limit. More lines improve the chance of a four-plus result, but lottery tickets remain negative expected-value purchases.
+
+The key rule: for one draw, buy the complete generated portfolio you chose; don’t cherry-pick or mix in consensus numbers, because that defeats the coverage optimisation.
