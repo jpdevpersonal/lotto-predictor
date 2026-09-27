@@ -7,9 +7,15 @@ API_DIR="$ROOT_DIR/backend/LottoPredictor.Api"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 API_URL="http://localhost:5080"
 UI_URL="http://localhost:5173"
+BROWSER_UI_URL="$UI_URL"
 API_PID=""
 UI_PID=""
 MUTATION_API_KEY="${MUTATION_API_KEY:-}"
+
+if command -v ip >/dev/null 2>&1; then
+    NETWORK_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '/src/ { for (field = 1; field <= NF; field++) if ($field == "src") { print $(field + 1); exit } }')"
+    [[ -n "$NETWORK_IP" ]] && BROWSER_UI_URL="http://$NETWORK_IP:5173"
+fi
 
 cleanup() {
     trap - EXIT INT TERM
@@ -112,5 +118,22 @@ export VITE_MUTATION_API_KEY="$MUTATION_API_KEY"
 npm --prefix "$FRONTEND_DIR" run dev &
 UI_PID=$!
 
-printf '\nLotto Predictor is running. Open %s\nPress Ctrl+C to stop both services.\n\n' "$UI_URL"
+printf 'Waiting for frontend to be ready...\n'
+for _ in {1..30}; do
+    if curl --silent --fail "$UI_URL" >/dev/null; then
+        break
+    fi
+    if ! kill -0 "$UI_PID" 2>/dev/null; then
+        printf 'Frontend process exited before becoming ready at %s.\n' "$UI_URL" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+if ! curl --silent --fail "$UI_URL" >/dev/null; then
+    printf 'Frontend did not become ready at %s.\n' "$UI_URL" >&2
+    exit 1
+fi
+
+printf '\nLotto Predictor is running.\nOpen locally: %s\nOpen in your browser: %s\nPress Ctrl+C to stop both services.\n\n' "$UI_URL" "$BROWSER_UI_URL"
 wait "$API_PID" "$UI_PID"
