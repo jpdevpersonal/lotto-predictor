@@ -31,6 +31,19 @@ public sealed class BacktestReport
     /// <summary>Final multiplicative-weights distribution over strategies after the walk-forward
     /// run. This is what the hedge ensemble would use for the next real prediction.</summary>
     public required IReadOnlyDictionary<string, double> HedgeWeights { get; init; }
+
+    /// <summary>Information test for the chosen strategy's ball ranking. Its scores are turned
+    /// into per-ball probabilities with a softmax whose temperature is fitted on the selection
+    /// draws only; the held-out draws are then scored by the mean log-likelihood ratio (nats per
+    /// draw) of those probabilities against the uniform draw. Zero means the ranking carries no
+    /// information; this test is roughly two orders of magnitude more sensitive than counting
+    /// four-plus hits, which are far too rare to measure over a few hundred draws.</summary>
+    public required double InformationTemperature { get; init; }
+    public required double InformationLogScore { get; init; }
+    public required double InformationZ { get; init; }
+    /// <summary>z-score of the chosen strategy's held-out average matches against the exact
+    /// uniform expectation pick²/pool.</summary>
+    public required double AvgMatchesZ { get; init; }
 }
 
 /// <summary>Walk-forward backtesting. For every evaluation draw the engine only ever receives the
@@ -64,6 +77,10 @@ public static class Backtester
 
         var matchLists = strategies.ToDictionary(s => s.Name, _ => new List<int>(evaluated));
         var ensembleMatches = new List<int>(evaluated);
+        // Per step, per strategy: the score of every eligible ball and which balls were drawn,
+        // kept so the information test can be run on whichever strategy is selected afterwards.
+        var scoreSteps = strategies.ToDictionary(s => s.Name, _ => new List<InformationStep>(evaluated));
+        scoreSteps[EnsembleName] = new List<InformationStep>(evaluated);
         var hedge = strategies.ToDictionary(s => s.Name, _ => 1.0 / strategies.Count);
         var randomMatches = new List<int>(evaluated);
         var rng = new Random(randomSeed);
@@ -85,6 +102,7 @@ public static class Backtester
                 int m = CountMatches(result.Numbers, actual);
                 matchLists[strategy.Name].Add(m);
                 stepScores.Add((strategy, scores, m));
+                scoreSteps[strategy.Name].Add(InformationStep.From(scores, actual));
             }
 
             // Hedge ensemble: predict with the weights learned from PAST draws only, then update.
@@ -95,6 +113,7 @@ public static class Backtester
             var ensemblePrediction = PredictionEngine.GenerateFromScores(
                 fs, blended, new ScoringStrategy(EnsembleName, 0, 0, 0, 0, pairW, penW));
             ensembleMatches.Add(CountMatches(ensemblePrediction.Numbers, actual));
+            scoreSteps[EnsembleName].Add(InformationStep.From(blended, actual));
 
             double norm = 0;
             foreach (var t in stepScores)
@@ -149,6 +168,19 @@ public static class Backtester
         // A normal approximation is unsafe here because four-plus hits are very rare.
         double pValue = StatFunctions.BinomialUpperTail(
             best.Evaluated, best.FourPlusHits, randomFourPlusProbability);
+
+        var bestSteps = scoreSteps[best.Strategy.Name];
+        var (temperature, logScore, informationZ) = InformationTest(
+            bestSteps.Take(selectionEvaluated).ToList(), bestSteps.Skip(selectionEvaluated).ToList());
+        double avgMatchesZ = best.Evaluated > 1 && best.StdMatches > 1e-9
+            ? (best.AvgMatches - randomExpected) / (best.StdMatches / Math.Sqrt(best.Evaluated))
+            : 0;
+        string information = informationZ > 2.326
+            ? $"Information test: the ranking's calibrated probabilities beat uniform by {logScore:0.0000} nats/draw " +
+              $"on the holdout (z={informationZ:+0.00}, temperature {temperature:0.00}); this is a real signal worth tracking prospectively."
+            : $"Information test: the ranking's calibrated probabilities score {logScore:+0.0000} nats/draw against uniform " +
+              $"on the holdout (z={informationZ:+0.00}; average matches z={avgMatchesZ:+0.00}), i.e. the numbers chosen carry no " +
+              "detectable information. Every line then has the same 4+ chance and only the count of non-overlapping lines matters.";
         string verdict = pValue >= 0.05
             ? $"No measurable advantage over random selection for the four-plus objective. Best strategy '{best.Strategy.Name}' hit " +
               $"4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} held-out draws " +
@@ -159,6 +191,7 @@ public static class Backtester
               $"held-out draws ({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line; " +
               $"exact one-sided binomial p={pValue:0.####}). This is only a sparse historical signal; " +
               "future prospective tracking is still required before treating it as an edge.";
+        verdict += " " + information;
 
         var pool2 = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
         return new BacktestReport
@@ -175,7 +208,77 @@ public static class Backtester
             SelectionEvaluated = selectionEvaluated,
             HoldoutEvaluated = holdoutEvaluated,
             HedgeWeights = hedge,
+            InformationTemperature = temperature,
+            InformationLogScore = logScore,
+            InformationZ = informationZ,
+            AvgMatchesZ = avgMatchesZ,
         };
+    }
+
+    /// <summary>One walk-forward step's inputs to the information test.</summary>
+    public sealed record InformationStep(double[] Scores, bool[] Drawn)
+    {
+        public static InformationStep From(Dictionary<int, double> scores, int[] actual)
+        {
+            var ordered = scores.OrderBy(kv => kv.Key).ToArray();
+            var drawnSet = new HashSet<int>(actual);
+            return new InformationStep(
+                ordered.Select(kv => kv.Value).ToArray(),
+                ordered.Select(kv => drawnSet.Contains(kv.Key)).ToArray());
+        }
+    }
+
+    /// <summary>Mean log-likelihood ratio (nats/draw) of softmax(β·score) ball probabilities
+    /// versus uniform, over the drawn balls of each step.</summary>
+    private static double[] LogLikelihoodRatios(IReadOnlyList<InformationStep> steps, double beta)
+    {
+        var result = new double[steps.Count];
+        for (int t = 0; t < steps.Count; t++)
+        {
+            var s = steps[t].Scores;
+            int pool = s.Length;
+            int pick = steps[t].Drawn.Count(d => d);
+            double max = s.Max();
+            double sumExp = 0;
+            for (int i = 0; i < pool; i++) sumExp += Math.Exp(beta * (s[i] - max));
+            double q = (double)pick / pool;
+            double llr = 0;
+            for (int i = 0; i < pool; i++)
+            {
+                if (!steps[t].Drawn[i]) continue;
+                double p = Math.Min(1.0, pick * Math.Exp(beta * (s[i] - max)) / sumExp);
+                llr += Math.Log(p / q);
+            }
+            result[t] = llr;
+        }
+        return result;
+    }
+
+    /// <summary>Fits the softmax temperature on the selection steps (concave 1-D maximisation
+    /// by golden section), then scores the holdout steps at that temperature.</summary>
+    public static (double Temperature, double LogScore, double Z) InformationTest(
+        IReadOnlyList<InformationStep> selection, IReadOnlyList<InformationStep> holdout)
+    {
+        if (selection.Count == 0 || holdout.Count < 2) return (0, 0, 0);
+
+        double lo = -4, hi = 4;
+        const double phi = 0.6180339887498949;
+        double a = hi - phi * (hi - lo), b = lo + phi * (hi - lo);
+        double fa = LogLikelihoodRatios(selection, a).Average();
+        double fb = LogLikelihoodRatios(selection, b).Average();
+        for (int iter = 0; iter < 60; iter++)
+        {
+            if (fa > fb) { hi = b; b = a; fb = fa; a = hi - phi * (hi - lo); fa = LogLikelihoodRatios(selection, a).Average(); }
+            else { lo = a; a = b; fa = fb; b = lo + phi * (hi - lo); fb = LogLikelihoodRatios(selection, b).Average(); }
+        }
+        double beta = (lo + hi) / 2;
+        if (Math.Abs(beta) < 1e-6) beta = 0;
+
+        var llr = LogLikelihoodRatios(holdout, beta);
+        double mean = llr.Average();
+        double var = llr.Sum(v => (v - mean) * (v - mean)) / (llr.Length - 1);
+        double se = Math.Sqrt(var / llr.Length);
+        return (beta, mean, se > 1e-12 ? mean / se : 0);
     }
 
     public static int CountMatches(IReadOnlyList<int> predicted, IReadOnlyList<int> actual)

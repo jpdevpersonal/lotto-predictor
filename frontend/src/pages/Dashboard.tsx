@@ -75,7 +75,7 @@ export default function Dashboard({
   const [bestOf, setBestOf] = useState<BestOfLinesDto | null>(null);
   const [bestLoading, setBestLoading] = useState(false);
   const [excludeLastDrawNumbers, setExcludeLastDrawNumbers] = useState(false);
-  const [portfolioSize, setPortfolioSize] = useState(10);
+  const [portfolioSize, setPortfolioSize] = useState(3);
 
   const load = useCallback(async () => {
     try {
@@ -221,6 +221,18 @@ export default function Dashboard({
             {backtest.randomExpectedMatches.toFixed(2)} matches; no choice of
             numbers changes that in a fair draw. Only playing more
             non-overlapping lines raises the odds — use the portfolio below.
+            With K={portfolioSize} line{portfolioSize === 1 ? "" : "s"} sharing
+            at most one ball, the best any method can do is{" "}
+            {oneIn(
+              1 -
+                Math.pow(
+                  1 - portfolioSize * backtest.randomFourPlusProbability,
+                  lottery.roundCount,
+                ),
+            )}{" "}
+            per draw night ({lottery.roundCount} round
+            {lottery.roundCount === 1 ? "" : "s"}); the portfolio builder
+            reaches that ceiling exactly.
           </p>
         )}
 
