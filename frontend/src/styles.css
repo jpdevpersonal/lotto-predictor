@@ -374,6 +374,16 @@ input.star-input {
   font-variant-numeric: tabular-nums;
 }
 
+.line-row .line-score + .line-score {
+  margin-left: 0;
+}
+
+.line-score.hit,
+.verdict.hit {
+  color: var(--success);
+  font-weight: 700;
+}
+
 .actions {
   margin-top: 1.5rem;
   display: flex;

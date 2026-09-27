@@ -17,6 +17,8 @@ public record AddDrawRequest(
 
 public record GeneratePredictionRequest(bool ExcludeLastDrawNumbers = false);
 
+public record GeneratePortfolioRequest(int Count = 10, bool ExcludeLastDrawNumbers = false);
+
 public record AddDrawRoundsRequest(
     int[][] Rounds,
     int?[]? Bonuses = null,
@@ -76,28 +78,51 @@ public record PredictionDto(
     int[]? ActualLuckyStars,
     int? LuckyStarMatches,
     IReadOnlyList<PredictionEvaluationDto> Evaluations,
-    IReadOnlyList<NumberExplanationDto>? Explanation);
+    IReadOnlyList<NumberExplanationDto>? Explanation,
+    string? PortfolioId = null,
+    int? PortfolioRank = null);
 
-public record PredictionLineDto(
+public record PortfolioLineDto(
     int Rank,
     int[] Numbers,
     int[] LuckyStars,
-    double Score,
-    int NewFourSubsets,
-    int SharedFourSubsets);
+    double? Score,
+    int MaxOverlapWithEarlier,
+    /// <summary>Persisted prediction row, null for screen-only portfolios.</summary>
+    PredictionDto? Prediction);
 
-public record PredictionLinesDto(
+public record PortfolioSimulationDto(
+    int Trials,
+    double Probability,
+    double CiLow,
+    double CiHigh,
+    double RandomDistinctProbability);
+
+public record PortfolioDto(
+    string? PortfolioId,
+    DateTime CreatedUtc,
     string StrategyName,
+    string ModelVersion,
     int CutoffDrawNumber,
     int LineCount,
+    int RoundCount,
     string Objective,
+    /// <summary>P(one line matches 4+) in one round.</summary>
     double SingleLineFourPlusProbability,
+    /// <summary>P(at least one line matches 4+) in one round; exact when ProbabilityIsExact.</summary>
     double PortfolioFourPlusProbability,
-    double PortfolioFourPlusCiLow,
-    double PortfolioFourPlusCiHigh,
-    double RandomDistinctPortfolioFourPlusProbability,
-    int SimulationTrials,
-    IReadOnlyList<PredictionLineDto> Lines);
+    bool ProbabilityIsExact,
+    /// <summary>P(at least one line matches 4+ in at least one round of the next draw night).</summary>
+    double AnyRoundFourPlusProbability,
+    int MaxPairwiseOverlap,
+    /// <summary>Lines needed for a 50% chance of a 4+ match on one draw night.</summary>
+    int LinesForEvenOdds,
+    PortfolioSimulationDto? Simulation,
+    /// <summary>Best match count over all lines and evaluated rounds, once evaluated.</summary>
+    int? BestMatches,
+    int? BestMatchesRound,
+    int? BestMatchesRank,
+    IReadOnlyList<PortfolioLineDto> Lines);
 
 public record BestOfLinesDto(
     int[] Numbers,
