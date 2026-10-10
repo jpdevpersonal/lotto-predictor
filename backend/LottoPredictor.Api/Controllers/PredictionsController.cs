@@ -22,11 +22,25 @@ public class PredictionsController(IPredictionService predictions) : ControllerB
         => Ok(await predictions.GenerateAsync(request?.ExcludeLastDrawNumbers ?? false, ct));
 
     [HttpGet("lines")]
-    public async Task<ActionResult<PredictionLinesDto>> GetLines(
+    public async Task<ActionResult<PortfolioDto>> GetLines(
         [FromQuery] int count = 1,
         [FromQuery] bool excludeLastDrawNumbers = false,
         CancellationToken ct = default)
         => Ok(await predictions.GenerateLinesAsync(count, excludeLastDrawNumbers, ct));
+
+    [HttpPost("portfolio")]
+    public async Task<ActionResult<PortfolioDto>> GeneratePortfolio(
+        [FromBody] GeneratePortfolioRequest? request,
+        CancellationToken ct = default)
+        => Ok(await predictions.GeneratePortfolioAsync(
+            request?.Count ?? 10, request?.ExcludeLastDrawNumbers ?? false, ct));
+
+    [HttpGet("portfolio/latest")]
+    public async Task<ActionResult<PortfolioDto>> GetLatestPortfolio(CancellationToken ct = default)
+    {
+        var latest = await predictions.GetLatestPortfolioAsync(ct);
+        return latest is null ? NotFound() : Ok(latest);
+    }
 
     [HttpGet("lines/best")]
     public async Task<ActionResult<BestOfLinesDto>> GetBestOfLines(

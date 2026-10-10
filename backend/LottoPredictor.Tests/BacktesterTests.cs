@@ -164,4 +164,67 @@ public class BacktesterTests
         Assert.Throws<InvalidOperationException>(
             () => Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 100, warmup: 150));
     }
+
+    [Fact]
+    public void Information_test_is_zero_at_zero_temperature_and_positive_for_a_real_signal()
+    {
+        // Scores that perfectly rank the drawn balls must earn a positive temperature and a
+        // clearly positive held-out log score; unrelated scores must not.
+        var rng = new Random(5);
+        Backtester.InformationStep Informative()
+        {
+            var drawn = new bool[59];
+            foreach (var n in RandomSet(rng)) drawn[n - 1] = true;
+            var scores = Enumerable.Range(0, 59).Select(i => (drawn[i] ? 2.0 : 0.0) + rng.NextDouble() * 0.1).ToArray();
+            return new Backtester.InformationStep(scores, drawn);
+        }
+        Backtester.InformationStep Noise()
+        {
+            var drawn = new bool[59];
+            foreach (var n in RandomSet(rng)) drawn[n - 1] = true;
+            return new Backtester.InformationStep(
+                Enumerable.Range(0, 59).Select(_ => rng.NextDouble()).ToArray(), drawn);
+        }
+
+        var signal = Backtester.InformationTest(
+            Enumerable.Range(0, 100).Select(_ => Informative()).ToList(),
+            Enumerable.Range(0, 100).Select(_ => Informative()).ToList());
+        Assert.True(signal.Temperature > 0.5);
+        Assert.True(signal.LogScore > 1.0);
+        Assert.True(signal.Z > 5);
+
+        var noise = Backtester.InformationTest(
+            Enumerable.Range(0, 200).Select(_ => Noise()).ToList(),
+            Enumerable.Range(0, 200).Select(_ => Noise()).ToList());
+        Assert.InRange(noise.Z, -3, 3);
+        Assert.InRange(noise.LogScore, -0.2, 0.2);
+
+        static int[] RandomSet(Random rng)
+        {
+            var set = new HashSet<int>();
+            while (set.Count < 6) set.Add(rng.Next(1, 60));
+            return [.. set];
+        }
+    }
+
+    [Fact]
+    public void Verdict_reports_the_information_test_on_random_data()
+    {
+        var draws = RandomHistory(600, 59, seed: 7);
+        var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 300, warmup: 200);
+        Assert.Contains("Information test", report.Verdict);
+        Assert.Contains("carry no detectable information", report.Verdict);
+        Assert.InRange(report.InformationZ, -3.5, 2.326);
+    }
+
+    [Fact]
+    public void Information_test_detects_a_planted_pattern()
+    {
+        var draws = new List<DrawEvent>();
+        for (int i = 1; i <= 300; i++) draws.Add(Ev(i, 1, 2, 3, 4, 5, 7 + (i % 53)));
+        var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 100, warmup: 150);
+        Assert.True(report.InformationZ > 2.326);
+        Assert.True(report.InformationLogScore > 0);
+        Assert.Contains("real signal", report.Verdict);
+    }
 }

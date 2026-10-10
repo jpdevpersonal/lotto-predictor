@@ -18,6 +18,10 @@ public class Prediction
     public string ModelVersion { get; set; } = "";
     public string StrategyName { get; set; } = "";
 
+    /// <summary>Set when the line belongs to a persisted K-line portfolio.</summary>
+    public string? PortfolioId { get; set; }
+    public int? PortfolioRank { get; set; }
+
     /// <summary>Comma separated actual numbers once the next draw is known.</summary>
     public string? ActualNumbersCsv { get; set; }
     public string? ActualLuckyStarsCsv { get; set; }

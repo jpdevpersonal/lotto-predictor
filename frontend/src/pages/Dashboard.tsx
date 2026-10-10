@@ -5,7 +5,8 @@ import type {
   BestOfLinesDto,
   LearningDto,
   PredictionDto,
-  PredictionLinesDto,
+  PortfolioDto,
+  PortfolioLineDto,
   StatisticsDto,
   LotteryProfile,
 } from "../types";
@@ -37,6 +38,24 @@ function formatPct(value: number) {
   return `${(value * 100).toFixed(value < 0.001 ? 4 : 2)}%`;
 }
 
+function oneIn(probability: number) {
+  return `1 in ${Math.round(1 / probability).toLocaleString()}`;
+}
+
+/** Lines needed for a target chance of a 4+ match on one draw night, with the optimal
+ * (pairwise overlap ≤ 1) design where the portfolio chance is exactly K × single-line odds. */
+function linesForTarget(target: number, singleLine: number, rounds: number) {
+  return Math.ceil((1 - Math.pow(1 - target, 1 / rounds)) / singleLine - 1e-9);
+}
+
+/** Numbers of a line that appeared in any evaluated round. */
+function matchedNumbers(line: PortfolioLineDto) {
+  const actual = new Set(
+    line.prediction?.evaluations.flatMap((e) => e.actualNumbers) ?? [],
+  );
+  return line.numbers.filter((n) => actual.has(n));
+}
+
 export default function Dashboard({
   lottery,
   onAddResult,
@@ -51,27 +70,29 @@ export default function Dashboard({
   const [learning, setLearning] = useState<LearningDto | null>(null);
   const [error, setError] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [lines, setLines] = useState<PredictionLinesDto | null>(null);
-  const [linesLoading, setLinesLoading] = useState(false);
+  const [portfolio, setPortfolio] = useState<PortfolioDto | null>(null);
+  const [portfolioLoading, setPortfolioLoading] = useState(false);
   const [bestOf, setBestOf] = useState<BestOfLinesDto | null>(null);
   const [bestLoading, setBestLoading] = useState(false);
   const [excludeLastDrawNumbers, setExcludeLastDrawNumbers] = useState(false);
-  const [portfolioSize, setPortfolioSize] = useState(1);
+  const [portfolioSize, setPortfolioSize] = useState(3);
 
   const load = useCallback(async () => {
     try {
-      const [s, b, p, h, l] = await Promise.all([
+      const [s, b, p, h, l, f] = await Promise.all([
         api.statistics(),
         api.backtesting(),
         api.latestPrediction(),
         api.predictionHistory(),
         api.learning(),
+        api.latestPortfolio(),
       ]);
       setStats(s);
       setBacktest(b);
       setPrediction(p);
       setHistory(h ?? []);
       setLearning(l);
+      setPortfolio(f);
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load data");
@@ -97,16 +118,19 @@ export default function Dashboard({
     }
   };
 
-  const loadLines = async () => {
-    setLinesLoading(true);
+  const generatePortfolio = async () => {
+    setPortfolioLoading(true);
     setBestOf(null);
     try {
-      setLines(await api.predictionLines(portfolioSize, excludeLastDrawNumbers));
+      setPortfolio(
+        await api.generatePortfolio(portfolioSize, excludeLastDrawNumbers),
+      );
+      setHistory(await api.predictionHistory());
       setError("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to generate lines");
+      setError(e instanceof Error ? e.message : "Failed to generate portfolio");
     } finally {
-      setLinesLoading(false);
+      setPortfolioLoading(false);
     }
   };
 
@@ -190,6 +214,27 @@ export default function Dashboard({
         ) : (
           <p className="muted">none yet</p>
         )}
+        {backtest && (
+          <p className="muted">
+            Any single line has a {oneIn(backtest.randomFourPlusProbability)}{" "}
+            chance of 4+ matches per round and averages{" "}
+            {backtest.randomExpectedMatches.toFixed(2)} matches; no choice of
+            numbers changes that in a fair draw. Only playing more
+            non-overlapping lines raises the odds — use the portfolio below.
+            With K={portfolioSize} line{portfolioSize === 1 ? "" : "s"} sharing
+            at most one ball, the best any method can do is{" "}
+            {oneIn(
+              1 -
+                Math.pow(
+                  1 - portfolioSize * backtest.randomFourPlusProbability,
+                  lottery.roundCount,
+                ),
+            )}{" "}
+            per draw night ({lottery.roundCount} round
+            {lottery.roundCount === 1 ? "" : "s"}); the portfolio builder
+            reaches that ceiling exactly.
+          </p>
+        )}
 
         <div className="actions">
           <label className="prediction-option">
@@ -221,10 +266,12 @@ export default function Dashboard({
           </button>
           <button
             className="secondary"
-            onClick={loadLines}
-            disabled={linesLoading}
+            onClick={generatePortfolio}
+            disabled={portfolioLoading}
           >
-            {linesLoading ? "Generating…" : `Generate ${portfolioSize} Line${portfolioSize === 1 ? "" : "s"}`}
+            {portfolioLoading
+              ? "Generating…"
+              : `Play ${portfolioSize} Line${portfolioSize === 1 ? "" : "s"}`}
           </button>
           <button className="secondary" onClick={onAddResult}>
             Add New Result
@@ -232,28 +279,81 @@ export default function Dashboard({
         </div>
       </section>
 
-      {lines && (
+      {portfolio && (
         <section>
           <div className="section-heading">
             <div>
-              <h2>Fixed portfolio</h2>
+              <h2>Played portfolio</h2>
               <p className="muted">
-                Fixed portfolio of <strong>K={lines.lineCount}</strong> lines
-                from strategy <strong>{lines.strategyName}</strong> after draw #
-                {lines.cutoffDrawNumber}. Objective: {lines.objective}.
+                <strong>K={portfolio.lineCount}</strong> lines from strategy{" "}
+                <strong>{portfolio.strategyName}</strong> after draw #
+                {portfolio.cutoffDrawNumber}, saved{" "}
+                {portfolio.createdUtc.replace("T", " ").slice(0, 16)} UTC and
+                scored against every round of the next draw. Lines pairwise
+                share at most {portfolio.maxPairwiseOverlap} ball
+                {portfolio.maxPairwiseOverlap === 1 ? "" : "s"}
+                {portfolio.probabilityIsExact
+                  ? ", so no single draw can pay two lines and the portfolio reaches the theoretical maximum K × single-line odds exactly."
+                  : " (pool nearly saturated; odds below are a tight lower bound)."}
               </p>
               <p className="verdict compact">
-                Single-line 4+ probability under fair draw: {formatPct(lines.singleLineFourPlusProbability)}.
-                Portfolio estimate: {formatPct(lines.portfolioFourPlusProbability)}
-                {" "}(95% CI {formatPct(lines.portfolioFourPlusCiLow)}-{formatPct(lines.portfolioFourPlusCiHigh)})
-                from {lines.simulationTrials.toLocaleString()} simulations; random distinct K-line estimate:
-                {" "}{formatPct(lines.randomDistinctPortfolioFourPlusProbability)}.
+                Chance of at least one line matching 4+ main numbers:{" "}
+                <strong>
+                  {formatPct(portfolio.anyRoundFourPlusProbability)}
+                </strong>{" "}
+                ({oneIn(portfolio.anyRoundFourPlusProbability)}) across{" "}
+                {portfolio.roundCount} round
+                {portfolio.roundCount === 1 ? "" : "s"};{" "}
+                {formatPct(portfolio.portfolioFourPlusProbability)} per round.
+                Single line:{" "}
+                {formatPct(portfolio.singleLineFourPlusProbability)} per round (
+                {oneIn(portfolio.singleLineFourPlusProbability)}).
+                {portfolio.simulation &&
+                  ` Monte Carlo check: ${formatPct(portfolio.simulation.probability)} (95% CI ${formatPct(portfolio.simulation.ciLow)}–${formatPct(portfolio.simulation.ciHigh)}, ${portfolio.simulation.trials.toLocaleString()} draws); ${portfolio.lineCount} random distinct lines: ${formatPct(portfolio.simulation.randomDistinctProbability)}.`}
               </p>
+              {portfolio.bestMatches != null && (
+                <p
+                  className={`verdict compact${portfolio.bestMatches >= 4 ? " hit" : ""}`}
+                >
+                  Result: best line #{portfolio.bestMatchesRank} matched{" "}
+                  {portfolio.bestMatches} in round {portfolio.bestMatchesRound}
+                  {portfolio.bestMatches >= 4
+                    ? " — 4+ hit."
+                    : " — no 4+ hit this draw."}
+                </p>
+              )}
             </div>
             <button onClick={loadBestOf} disabled={bestLoading}>
               {bestLoading ? "Computing…" : "Show Consensus"}
             </button>
           </div>
+
+          <table className="compact">
+            <thead>
+              <tr>
+                <th>
+                  Target chance of a 4+ match on one draw night (
+                  {portfolio.roundCount} round
+                  {portfolio.roundCount === 1 ? "" : "s"})
+                </th>
+                <th>Lines needed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[0.01, 0.05, 0.1, 0.25, 0.5, 0.9].map((target) => (
+                <tr key={target}>
+                  <td>{Math.round(target * 100)}%</td>
+                  <td>
+                    {linesForTarget(
+                      target,
+                      portfolio.singleLineFourPlusProbability,
+                      portfolio.roundCount,
+                    ).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
 
           {bestOf && (
             <div className="best-of-card">
@@ -261,7 +361,7 @@ export default function Dashboard({
                 Best-of-50 consensus{" "}
                 <strong>
                   — the {lottery.mainNumberCount} numbers appearing most across
-                  all {lines.lineCount} lines
+                  all {portfolio.lineCount} lines
                 </strong>
               </p>
               <div className="balls">
@@ -284,24 +384,42 @@ export default function Dashboard({
               )}
               <p className="muted">
                 Frequency shows how many of the {bestOf.linesConsidered} lines
-                include each number. It is descriptive only, not higher confidence.
+                include each number. It is descriptive only, not higher
+                confidence.
               </p>
             </div>
           )}
 
           <div className="lines-grid">
-            {lines.lines.map((line) => (
+            {portfolio.lines.map((line) => (
               <div className="line-row" key={line.rank}>
                 <span className="line-rank">#{line.rank}</span>
-                <Balls numbers={line.numbers} />
+                <Balls numbers={line.numbers} matched={matchedNumbers(line)} />
                 {line.luckyStars.length > 0 && (
                   <Balls numbers={line.luckyStars} stars />
                 )}
-                <span className="line-score" title="Model line score">
-                  {line.score.toFixed(3)}
-                </span>
-                <span className="line-score" title="New/shared four-number subsets">
-                  +{line.newFourSubsets}/{line.sharedFourSubsets}
+                {line.prediction?.evaluations.map((evaluation) => (
+                  <span
+                    key={evaluation.evaluatedDrawId}
+                    className={`line-score${evaluation.matches >= 4 ? " hit" : ""}`}
+                    title={`Round ${evaluation.round}: ${evaluation.actualNumbers.join(" ")}`}
+                  >
+                    R{evaluation.round}: {evaluation.matches}
+                  </span>
+                ))}
+                {line.score != null && (
+                  <span
+                    className="line-score"
+                    title="Model line score (tie-break only; cannot change the odds)"
+                  >
+                    {line.score.toFixed(3)}
+                  </span>
+                )}
+                <span
+                  className="line-score"
+                  title="Most balls shared with any earlier line"
+                >
+                  ∩{line.maxOverlapWithEarlier}
                 </span>
               </div>
             ))}
@@ -386,7 +504,9 @@ export default function Dashboard({
                   <td>{s.pct2}%</td>
                   <td>{s.pct3Plus}%</td>
                   <td>{s.fourPlusHits}</td>
-                  <td title={`95% CI ${formatPct(s.fourPlusCiLow)}-${formatPct(s.fourPlusCiHigh)}`}>
+                  <td
+                    title={`95% CI ${formatPct(s.fourPlusCiLow)}-${formatPct(s.fourPlusCiHigh)}`}
+                  >
                     {formatPct(s.fourPlusRate)}
                   </td>
                 </tr>
@@ -406,8 +526,9 @@ export default function Dashboard({
                 <td>random baseline (theoretical)</td>
                 <td>{backtest.randomExpectedMatches.toFixed(4)}</td>
                 <td colSpan={7} className="muted">
-                  exact single-line random 4+ probability: {formatPct(backtest.randomFourPlusProbability)};
-                  expected 4+ hits: {backtest.randomExpectedFourPlusHits.toFixed(4)}
+                  exact single-line random 4+ probability:{" "}
+                  {formatPct(backtest.randomFourPlusProbability)}; expected 4+
+                  hits: {backtest.randomExpectedFourPlusHits.toFixed(4)}
                 </td>
               </tr>
             </tbody>
@@ -425,12 +546,12 @@ export default function Dashboard({
             {learning.refreshedUtc
               ? `, refreshed ${learning.refreshedUtc.replace("T", " ").slice(0, 16)} UTC`
               : ""}
-            : each new draw
-            triggers one genetic-optimizer generation — elite weight sets are
-            mutated, crossed over, and challenged by random immigrants, all
-            judged by the same walk-forward backtest. An online hedge ensemble
-            (multiplicative weights) blends every strategy and competes too.
-            Active strategy: <strong>{learning.activeStrategyName}</strong>
+            : each new draw triggers one genetic-optimizer generation — elite
+            weight sets are mutated, crossed over, and challenged by random
+            immigrants, all judged by the same walk-forward backtest. An online
+            hedge ensemble (multiplicative weights) blends every strategy and
+            competes too. Active strategy:{" "}
+            <strong>{learning.activeStrategyName}</strong>
             {learning.activeIsLearned && (
               <span className="badge">Learned</span>
             )}{" "}
@@ -555,7 +676,12 @@ export default function Dashboard({
             <tbody>
               {history.map((p) => (
                 <tr key={p.id}>
-                  <td>{p.id}</td>
+                  <td>
+                    {p.id}
+                    {p.portfolioRank != null && (
+                      <span className="badge">line {p.portfolioRank}</span>
+                    )}
+                  </td>
                   <td>{p.createdUtc.replace("T", " ").slice(0, 16)}</td>
                   <td>{p.numbers.join(" ")}</td>
                   <td>#{p.cutoffDrawNumber}</td>
@@ -564,8 +690,11 @@ export default function Dashboard({
                     {p.evaluations.length > 0
                       ? p.evaluations.map((evaluation) => (
                           <div key={evaluation.evaluatedDrawId}>
-                            Round {evaluation.round}: {evaluation.actualNumbers.join(" ")}
-                            {evaluation.bonus != null ? ` + bonus ${evaluation.bonus}` : ""}
+                            Round {evaluation.round}:{" "}
+                            {evaluation.actualNumbers.join(" ")}
+                            {evaluation.bonus != null
+                              ? ` + bonus ${evaluation.bonus}`
+                              : ""}
                             {evaluation.actualLuckyStars.length > 0
                               ? ` + ${lottery.bonusLabel.toLowerCase()}s ${evaluation.actualLuckyStars.join(" ")}`
                               : ""}
@@ -588,7 +717,7 @@ export default function Dashboard({
                               : ""}
                           </div>
                         ))
-                      : p.matches ?? "pending"}
+                      : (p.matches ?? "pending")}
                   </td>
                 </tr>
               ))}

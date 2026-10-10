@@ -107,29 +107,47 @@ export interface PredictionDto {
   luckyStarMatches: number | null;
   evaluations: PredictionEvaluationDto[];
   explanation: NumberExplanationDto[] | null;
+  portfolioId: string | null;
+  portfolioRank: number | null;
 }
 
-export interface PredictionLineDto {
+export interface PortfolioLineDto {
   rank: number;
   numbers: number[];
   luckyStars: number[];
-  score: number;
-  newFourSubsets: number;
-  sharedFourSubsets: number;
+  score: number | null;
+  maxOverlapWithEarlier: number;
+  prediction: PredictionDto | null;
 }
 
-export interface PredictionLinesDto {
+export interface PortfolioSimulationDto {
+  trials: number;
+  probability: number;
+  ciLow: number;
+  ciHigh: number;
+  randomDistinctProbability: number;
+}
+
+export interface PortfolioDto {
+  portfolioId: string | null;
+  createdUtc: string;
   strategyName: string;
+  modelVersion: string;
   cutoffDrawNumber: number;
   lineCount: number;
+  roundCount: number;
   objective: string;
   singleLineFourPlusProbability: number;
   portfolioFourPlusProbability: number;
-  portfolioFourPlusCiLow: number;
-  portfolioFourPlusCiHigh: number;
-  randomDistinctPortfolioFourPlusProbability: number;
-  simulationTrials: number;
-  lines: PredictionLineDto[];
+  probabilityIsExact: boolean;
+  anyRoundFourPlusProbability: number;
+  maxPairwiseOverlap: number;
+  linesForEvenOdds: number;
+  simulation: PortfolioSimulationDto | null;
+  bestMatches: number | null;
+  bestMatchesRound: number | null;
+  bestMatchesRank: number | null;
+  lines: PortfolioLineDto[];
 }
 
 export interface BestOfLinesDto {

@@ -5,7 +5,7 @@ import type {
   DrawHistoryDto,
   LearningDto,
   PredictionDto,
-  PredictionLinesDto,
+  PortfolioDto,
   StatisticsDto,
   LotteryKey,
 } from "./types";
@@ -43,9 +43,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 function defaultErrorMessage(status: number, method: string) {
   if (mutatingMethods.has(method)) {
-    if (status === 503) return "Mutation API key is not configured on the server.";
-    if (status === 401) return "Mutation API key is missing. Restart the app with VITE_MUTATION_API_KEY configured.";
-    if (status === 403) return "Mutation API key is invalid. Check that frontend and backend keys match.";
+    if (status === 503)
+      return "Mutation API key is not configured on the server.";
+    if (status === 401)
+      return "Mutation API key is missing. Restart the app with VITE_MUTATION_API_KEY configured.";
+    if (status === 403)
+      return "Mutation API key is invalid. Check that frontend and backend keys match.";
   }
   return `Request failed (${status})`;
 }
@@ -55,7 +58,9 @@ export const api = {
   backtesting: () => request<BacktestingDto>("/api/backtesting"),
   latestDraw: () => request<DrawDto | null>("/api/draws/latest"),
   drawHistory: (offset = 0, limit = 100) =>
-    request<DrawHistoryDto>(`/api/draws/history?offset=${offset}&limit=${limit}`),
+    request<DrawHistoryDto>(
+      `/api/draws/history?offset=${offset}&limit=${limit}`,
+    ),
   addDraw: (numbers: number[], bonus: number | null = null) =>
     request<DrawDto>("/api/draws", {
       method: "POST",
@@ -102,9 +107,17 @@ export const api = {
       body: JSON.stringify({ excludeLastDrawNumbers }),
     }),
   predictionLines: (count = 1, excludeLastDrawNumbers = false) =>
-    request<PredictionLinesDto>(
+    request<PortfolioDto>(
       `/api/predictions/lines?count=${count}&excludeLastDrawNumbers=${excludeLastDrawNumbers}`,
     ),
+  generatePortfolio: (count = 10, excludeLastDrawNumbers = false) =>
+    request<PortfolioDto>("/api/predictions/portfolio", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ count, excludeLastDrawNumbers }),
+    }),
+  latestPortfolio: () =>
+    request<PortfolioDto | null>("/api/predictions/portfolio/latest"),
   bestOfLines: (count = 50) =>
     request<BestOfLinesDto>(`/api/predictions/lines/best?count=${count}`),
   predictionHistory: () => request<PredictionDto[]>("/api/predictions/history"),

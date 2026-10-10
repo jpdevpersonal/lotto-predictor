@@ -317,6 +317,41 @@ public sealed class ServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Portfolio_is_persisted_and_every_line_is_evaluated_against_both_rounds()
+    {
+        SeedDraws(200);
+        var single = await _predictionService.GenerateAsync();
+        var portfolio = await _predictionService.GeneratePortfolioAsync(count: 8);
+
+        Assert.NotNull(portfolio.PortfolioId);
+        Assert.Equal(8, portfolio.LineCount);
+        Assert.Equal(2, portfolio.RoundCount);
+        Assert.True(portfolio.ProbabilityIsExact);
+        Assert.Equal(8 * portfolio.SingleLineFourPlusProbability, portfolio.PortfolioFourPlusProbability, 9);
+        Assert.Equal(1 - Math.Pow(1 - portfolio.PortfolioFourPlusProbability, 2), portfolio.AnyRoundFourPlusProbability, 9);
+        Assert.All(portfolio.Lines, line => Assert.NotNull(line.Prediction));
+        Assert.Null(portfolio.BestMatches);
+
+        // The single-line endpoint must not be hijacked by portfolio rows.
+        Assert.Equal(single.Id, (await _predictionService.GetLatestAsync())!.Id);
+
+        // Round 1 shares four numbers with line 3; round 2 shares none with any line.
+        var line3 = portfolio.Lines[2].Numbers;
+        var unused = Enumerable.Range(1, 59).Except(portfolio.Lines.SelectMany(l => l.Numbers)).ToArray();
+        var round1 = line3.Take(4).Concat(unused.Take(2)).ToArray();
+        var round2 = unused.Skip(2).Take(6).ToArray();
+        await _drawService.AddDrawRoundsAsync(new AddDrawRoundsRequest([round1, round2]));
+
+        var latest = (await _predictionService.GetLatestPortfolioAsync())!;
+        Assert.Equal(portfolio.PortfolioId, latest.PortfolioId);
+        Assert.All(latest.Lines, line => Assert.Equal(2, line.Prediction!.Evaluations.Count));
+        Assert.Equal(4, latest.BestMatches);
+        Assert.Equal(1, latest.BestMatchesRound);
+        Assert.Equal(3, latest.BestMatchesRank);
+        Assert.Equal(portfolio.PortfolioFourPlusProbability, latest.PortfolioFourPlusProbability, 9);
+    }
+
+    [Fact]
     public async Task Adding_two_rounds_records_each_round_and_uk_bonus_match()
     {
         SeedDraws(200);

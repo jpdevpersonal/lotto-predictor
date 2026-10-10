@@ -101,13 +101,15 @@ using (var scope = app.Services.CreateScope())
         ON "PredictionEvaluations" ("PredictionId", "EvaluatedDrawId");
         """);
 
-    #pragma warning disable EF1002 // Values below are compile-time schema identifiers, never request data.
+#pragma warning disable EF1002 // Values below are compile-time schema identifiers, never request data.
         foreach (var (table, column, definition) in new[]
                  {
                      ("Draws", "Bonus2", "INTEGER NULL"),
                      ("Predictions", "LuckyStarsCsv", "TEXT NULL"),
                      ("Predictions", "ActualLuckyStarsCsv", "TEXT NULL"),
                      ("Predictions", "LuckyStarMatches", "INTEGER NULL"),
+                     ("Predictions", "PortfolioId", "TEXT NULL"),
+                     ("Predictions", "PortfolioRank", "INTEGER NULL"),
                  })
         {
             bool exists = (await db.Database.SqlQueryRaw<int>(
