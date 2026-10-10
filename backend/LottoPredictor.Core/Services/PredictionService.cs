@@ -11,12 +11,12 @@ public interface IPredictionService
     Task<PredictionDto> GenerateAsync(bool excludeLastDrawNumbers = false, CancellationToken ct = default);
     Task<PredictionDto?> GetLatestAsync(CancellationToken ct = default);
     Task<IReadOnlyList<PredictionDto>> GetHistoryAsync(int limit = 100, CancellationToken ct = default);
-    /// <summary>Optimal K-line portfolio, computed on demand and never persisted.</summary>
+    /// <summary>Coverage-oriented K-line portfolio, computed on demand and never persisted.</summary>
     Task<PortfolioDto> GenerateLinesAsync(
         int count = 1,
         bool excludeLastDrawNumbers = false,
         CancellationToken ct = default);
-    /// <summary>Optimal K-line portfolio persisted as K predictions, so every line is evaluated
+    /// <summary>Coverage-oriented K-line portfolio persisted as K predictions, so every line is evaluated
     /// against each round of the next draw.</summary>
     Task<PortfolioDto> GeneratePortfolioAsync(
         int count = 10,
@@ -180,8 +180,10 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
 
         var snapshot = await analysis.GetSnapshotAsync(ct);
         var sets = rows.Select(r => r.Numbers()).ToList();
-        var odds = PortfolioOptimizer.ComputeOdds(
+        var simulation = PortfolioOptimizer.Simulate(
             sets, snapshot.Features.Pool.NextPoolSize, snapshot.Features.PickCount);
+        var odds = PortfolioOptimizer.ComputeOdds(
+            sets, snapshot.Features.Pool.NextPoolSize, snapshot.Features.PickCount, simulation);
         var lines = rows.Select((row, index) => new PortfolioLineDto(
             row.PortfolioRank ?? index + 1,
             row.Numbers(),
@@ -192,8 +194,10 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         return ToPortfolioDto(
             latestId, rows[0].CreatedUtc, rows[0].StrategyName, rows[0].ModelVersion,
             rows[0].CutoffDrawNumber, snapshot.Lottery.RoundCount,
-            $"P(at least one of K={rows.Count} fixed lines matches at least four main numbers in a round)",
-            odds, null, lines);
+            $"P(at least one of K={rows.Count} fixed lines matches at least three main numbers in a round)",
+            odds, new PortfolioSimulationDto(
+                simulation.Trials, Math.Round(simulation.Probability, 8),
+                Math.Round(simulation.CiLow, 8), Math.Round(simulation.CiHigh, 8), null), lines);
     }
 
     private static PortfolioDto ToPortfolioDto(
@@ -201,7 +205,7 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         int cutoffDrawNumber, int roundCount, string objective, PortfolioOdds odds,
         PortfolioSimulationDto? simulation, IReadOnlyList<PortfolioLineDto> lines)
     {
-        double perRound = odds.FourPlusProbability;
+        double perRound = odds.ThreePlusProbability;
         double anyRound = 1 - Math.Pow(1 - perRound, roundCount);
 
         var best = lines
@@ -214,12 +218,12 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         return new PortfolioDto(
             portfolioId, createdUtc, strategyName, modelVersion, cutoffDrawNumber, lines.Count,
             roundCount, objective,
-            Math.Round(odds.SingleLineFourPlusProbability, 10),
+            Math.Round(odds.SingleLineThreePlusProbability, 10),
             Math.Round(perRound, 10),
             odds.IsExact,
             Math.Round(anyRound, 10),
             odds.MaxPairwiseOverlap,
-            PortfolioOptimizer.LinesForTarget(0.5, odds.SingleLineFourPlusProbability, roundCount),
+            PortfolioOptimizer.LinesForTarget(0.5, odds.SingleLineThreePlusProbability, roundCount),
             simulation,
             evaluated ? best.Matches : null,
             evaluated ? best.Round : null,

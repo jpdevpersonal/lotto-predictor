@@ -21,7 +21,7 @@ public class PortfolioOptimizerTests
     }
 
     [Fact]
-    public void Coverage_portfolio_improves_or_matches_random_distinct_four_plus_estimate()
+    public void Coverage_portfolio_improves_or_matches_random_distinct_three_plus_estimate()
     {
         var history = RandomHistory(260, 59, seed: 456);
         var fs = FeatureCalculator.Compute(history, configuredPoolSize: 59);
@@ -30,11 +30,11 @@ public class PortfolioOptimizerTests
             fs, PredictionEngine.ScoreNumbers(fs, strategy), strategy, lineCount: 25);
 
         Assert.True(portfolio.CoverageOptimized.Probability >= portfolio.RandomDistinct.Probability * 0.95);
-        Assert.True(portfolio.CoverageOptimized.Probability >= portfolio.SingleLineFourPlusProbability);
+        Assert.True(portfolio.CoverageOptimized.Probability >= portfolio.SingleLineThreePlusProbability);
     }
 
     [Fact]
-    public void Coverage_portfolio_lines_pairwise_share_at_most_one_ball_so_odds_are_exact()
+    public void Low_overlap_six_ball_portfolio_reports_estimates_not_exact_union_bound()
     {
         var history = RandomHistory(260, 59, seed: 42);
         var fs = FeatureCalculator.Compute(history, configuredPoolSize: 59);
@@ -47,16 +47,16 @@ public class PortfolioOptimizerTests
             for (int j = i + 1; j < portfolio.Lines.Count; j++)
                 Assert.True(portfolio.Lines[i].Numbers.Intersect(portfolio.Lines[j].Numbers).Count() <= 1);
         Assert.All(portfolio.Lines, line => Assert.InRange(line.MaxOverlapWithEarlier, 0, 1));
-        Assert.True(portfolio.Odds.IsExact);
+        Assert.False(portfolio.Odds.IsExact);
         Assert.Equal(1, portfolio.Odds.MaxPairwiseOverlap);
-        // Mutually exclusive 4+ events: the portfolio reaches the union bound K * p exactly.
-        Assert.Equal(60 * portfolio.SingleLineFourPlusProbability, portfolio.Odds.FourPlusProbability, 12);
-        Assert.InRange(portfolio.Odds.FourPlusProbability,
+        Assert.True(portfolio.Odds.ThreePlusProbability < 60 * portfolio.SingleLineThreePlusProbability);
+        Assert.Equal(portfolio.CoverageOptimized.Probability, portfolio.Odds.ThreePlusProbability);
+        Assert.InRange(portfolio.Odds.ThreePlusProbability,
             portfolio.CoverageOptimized.CiLow, portfolio.CoverageOptimized.CiHigh);
     }
 
     [Fact]
-    public void Large_portfolio_relaxes_overlap_gradually_and_stays_near_union_bound()
+    public void Large_portfolio_reports_a_valid_estimate_when_pairwise_bounds_are_uninformative()
     {
         var history = RandomHistory(260, 59, seed: 99);
         var fs = FeatureCalculator.Compute(history, configuredPoolSize: 59);
@@ -66,14 +66,13 @@ public class PortfolioOptimizerTests
 
         Assert.Equal(200, portfolio.Lines.Select(line => string.Join(',', line.Numbers)).Distinct().Count());
         Assert.True(portfolio.Odds.MaxPairwiseOverlap <= 2);
-        // 200 lines use 3000 pair-slots over C(59,2)=1711 pairs, so some two-ball overlaps are
-        // unavoidable; each costs only 36/C(59,6) of probability.
-        double unionBound = 200 * portfolio.SingleLineFourPlusProbability;
-        Assert.InRange(portfolio.Odds.FourPlusProbability, unionBound * 0.98, unionBound);
+        Assert.False(portfolio.Odds.IsExact);
+        Assert.InRange(portfolio.Odds.ThreePlusProbability, portfolio.SingleLineThreePlusProbability, 1);
+        Assert.Equal(portfolio.CoverageOptimized.Probability, portfolio.Odds.ThreePlusProbability);
     }
 
     [Fact]
-    public void Pairwise_four_plus_overlap_matches_brute_force_enumeration()
+    public void Pairwise_three_plus_overlap_matches_brute_force_enumeration()
     {
         const int pool = 14, pick = 6;
         int[] a = [1, 2, 3, 4, 5, 6];
@@ -84,21 +83,25 @@ public class PortfolioOptimizerTests
             foreach (var draw in AllDraws(pool, pick))
             {
                 total++;
-                if (draw.Intersect(a).Count() >= 4 && draw.Intersect(b).Count() >= 4) both++;
+                if (draw.Intersect(a).Count() >= 3 && draw.Intersect(b).Count() >= 3) both++;
             }
-            Assert.Equal((double)both / total, PortfolioOptimizer.PairwiseFourPlusProbability(pool, pick, shared), 12);
-            if (shared <= 1) Assert.Equal(0, both);
+            Assert.Equal((double)both / total, PortfolioOptimizer.PairwiseThreePlusProbability(pool, pick, shared), 12);
+            Assert.True(both > 0);
+            var odds = PortfolioOptimizer.ComputeOdds([a, b], pool, pick);
+            Assert.True(odds.IsExact);
+            Assert.Equal(2 * Backtester.ThreePlusProbability(pool, pick) - (double)both / total,
+                odds.ThreePlusProbability, 12);
         }
     }
 
     [Fact]
     public void Lines_for_target_uses_two_rounds_per_night()
     {
-        double p = Backtester.FourPlusProbability(59, 6);
+        double p = Backtester.ThreePlusProbability(59, 6);
         int oneRound = PortfolioOptimizer.LinesForTarget(0.5, p, 1);
         int twoRounds = PortfolioOptimizer.LinesForTarget(0.5, p, 2);
-        Assert.Equal(1074, oneRound);
-        Assert.InRange(twoRounds, 620, 640);
+        Assert.Equal(47, oneRound);
+        Assert.Equal(27, twoRounds);
         Assert.Equal(0, PortfolioOptimizer.LinesForTarget(0, p, 2));
     }
 
@@ -117,13 +120,21 @@ public class PortfolioOptimizerTests
     }
 
     [Fact]
-    public void Single_line_simulation_agrees_with_closed_form_four_plus_odds()
+    public void Single_line_simulation_agrees_with_closed_form_three_plus_odds()
     {
-        double exact = 20989.0 / 45057474.0;
-        Assert.Equal(exact, Backtester.FourPlusProbability(59, 6), 10);
+        double exact = 489509.0 / 45057474.0;
+        Assert.Equal(exact, Backtester.ThreePlusProbability(59, 6), 10);
 
         var sim = PortfolioOptimizer.Simulate([[1, 2, 3, 4, 5, 6]], 59, 6, randomSeed: 7, trials: 1_000_000);
         Assert.InRange(exact, sim.CiLow, sim.CiHigh);
+    }
+
+    [Fact]
+    public void Disjoint_five_ball_lines_have_mutually_exclusive_three_plus_hits()
+    {
+        var odds = PortfolioOptimizer.ComputeOdds([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]], 50, 5);
+        Assert.True(odds.IsExact);
+        Assert.Equal(2 * Backtester.ThreePlusProbability(50, 5), odds.ThreePlusProbability, 12);
     }
 
     [Fact]

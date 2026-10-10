@@ -30,7 +30,7 @@ public interface IAnalysisService
 
 public class AnalysisOptions
 {
-    public int BacktestEvalWindow { get; set; } = 200;
+    public int BacktestEvalWindow { get; set; } = 1000;
     public int BacktestWarmup { get; set; } = 150;
 }
 
@@ -97,25 +97,30 @@ public class AnalysisService : IAnalysisService
                     ruleEras: lottery.BonusPoolRules)
                 : null;
 
-            // Learning step: only advance the optimizer when this dataset size has not already
-            // been analysed. Rebuilding the snapshot for the same data must be idempotent.
-            var learned = await db.LearnedStrategies.AsNoTracking()
-                .OrderByDescending(s => s.RecencyWeightedAvg)
-                .ToListAsync(ct);
             int drawCount = events.Count;
-            bool alreadyAnalysed = await db.StrategyPerformanceLogs.AsNoTracking()
-                .AnyAsync(log => log.DrawCount == drawCount, ct);
-            int previousGeneration = learned.Count > 0 ? learned.Max(s => s.Generation) : 0;
-            int generation = alreadyAnalysed ? previousGeneration : previousGeneration + 1;
-
-            var learnedStrategies = learned.Select(StrategyOptimizer.ToStrategy).ToList();
-            var seeds = learnedStrategies.Concat(ScoringStrategy.Candidates).ToList();
-            var newCandidates = alreadyAnalysed
-                ? []
-                : StrategyOptimizer.GenerateCandidates(seeds, generation);
+            int generation = 1;
+            int selectionCutoff = Backtester.SelectionCutoff(
+                drawCount, options.BacktestEvalWindow, options.BacktestWarmup);
+            IReadOnlyList<ScoringStrategy> seeds = ScoringStrategy.Candidates;
+            // Replay training from clean seeds. Saved winners may have seen today's historical
+            // holdout in an earlier rebuild, so they must never seed this validation.
+            if (selectionCutoff > options.BacktestWarmup + 2)
+            {
+                var training = Backtester.Run(
+                    Backtester.Prefix(events, selectionCutoff), seeds,
+                    options.BacktestEvalWindow, options.BacktestWarmup,
+                    configuredPoolSize: lottery.MainPoolSize,
+                    poolExpansionDate: lottery.MainPoolExpansionDate);
+                seeds = training.Strategies
+                    .Where(r => r.Strategy.Name != Backtester.EnsembleName)
+                    .OrderByDescending(r => r.ThreePlusRate)
+                    .ThenByDescending(r => r.AvgMatches)
+                    .ThenBy(r => r.Strategy.Name)
+                    .Select(r => r.Strategy).ToList();
+            }
+            var newCandidates = StrategyOptimizer.GenerateCandidates(seeds, generation);
 
             var allStrategies = ScoringStrategy.Candidates
-                .Concat(learnedStrategies)
                 .Concat(newCandidates)
                 .DistinctBy(s => s.Name)
                 .ToList();
@@ -125,8 +130,7 @@ public class AnalysisService : IAnalysisService
                 configuredPoolSize: lottery.MainPoolSize,
                 poolExpansionDate: lottery.MainPoolExpansionDate);
 
-            if (!alreadyAnalysed)
-                await PersistLearningAsync(db, backtest, generation, drawCount, ct);
+            await PersistLearningAsync(db, backtest, generation, drawCount, ct);
 
             state.Snapshot = new AnalysisSnapshot
             {
@@ -150,7 +154,7 @@ public class AnalysisService : IAnalysisService
         }
     }
 
-    /// <summary>Keeps the best learned strategies for the next generation and appends a
+    /// <summary>Saves selection-period winners for reporting, not as future training seeds, and appends a
     /// performance log row per strategy so improvement over time is auditable.</summary>
     private static async Task PersistLearningAsync(
         LottoDbContext db, BacktestReport backtest, int generation, int drawCount, CancellationToken ct)
@@ -158,18 +162,18 @@ public class AnalysisService : IAnalysisService
         var handWritten = ScoringStrategy.Candidates.Select(s => s.Name).ToHashSet();
         handWritten.Add(Backtester.EnsembleName); // ensemble is adaptive, not a weight vector to keep
 
-        // Survivors are ranked on the same four-plus objective used to select the active
-        // strategy. Average matches are a tie-breaker only, so a lineage cannot survive merely
+        // Survivors are ranked on the same three-plus objective used to select the active
+        // strategy. Average matches are a tie-breaker only, so a candidate cannot survive merely
         // by improving a different metric.
-        double handWrittenBest = backtest.Strategies
+        double handWrittenBest = backtest.SelectionStrategies
             .Where(r => handWritten.Contains(r.Strategy.Name))
-            .Max(r => r.FourPlusRate);
-        var survivors = backtest.Strategies
+            .Max(r => r.ThreePlusRate);
+        var survivors = backtest.SelectionStrategies
             .Where(r => !handWritten.Contains(r.Strategy.Name))
-            .OrderByDescending(r => r.FourPlusRate)
-            .ThenByDescending(r => r.RecencyWeightedAvg)
+            .OrderByDescending(r => r.ThreePlusRate)
+            .ThenByDescending(r => r.AvgMatches)
             .Take(StrategyOptimizer.MaxLearnedKept)
-            .Where(r => r.FourPlusRate >= handWrittenBest)
+            .Where(r => r.ThreePlusRate >= handWrittenBest)
             .ToList();
 
         var existing = await db.LearnedStrategies.ToListAsync(ct);

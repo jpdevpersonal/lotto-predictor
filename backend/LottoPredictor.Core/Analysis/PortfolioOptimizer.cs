@@ -16,10 +16,10 @@ public sealed record PortfolioSimulation(
 
 /// <summary>Analytic odds of a fixed portfolio for one uniform draw.</summary>
 public sealed record PortfolioOdds(
-    double SingleLineFourPlusProbability,
-    /// <summary>P(at least one line matches 4+). Exact when <see cref="IsExact"/>; otherwise the
-    /// second-order inclusion–exclusion value, which is a tight lower bound.</summary>
-    double FourPlusProbability,
+    double SingleLineThreePlusProbability,
+    /// <summary>P(at least one line matches 3+). Exact when <see cref="IsExact"/>; otherwise the
+    /// a reproducible Monte Carlo estimate.</summary>
+    double ThreePlusProbability,
     bool IsExact,
     int MaxPairwiseOverlap);
 
@@ -28,14 +28,13 @@ public sealed record PortfolioResult(
     PortfolioOdds Odds,
     PortfolioSimulation CoverageOptimized,
     PortfolioSimulation RandomDistinct,
-    double SingleLineFourPlusProbability,
+    double SingleLineThreePlusProbability,
     string Objective);
 
-/// <summary>Builds K lines that maximise P(at least one line matches 4+ main numbers) for a
-/// uniform draw. Two lines can both match 4+ in the same 6-ball draw only when they share at
-/// least two balls, so lines that pairwise share at most one ball make the 4+ events mutually
-/// exclusive and the portfolio hits the union bound K·p exactly — the best any K lines can do.
-/// When the pool can no longer supply such lines the constraint relaxes one ball at a time.
+/// <summary>Builds K lines that maximise P(at least one line matches 3+ main numbers) for a
+/// uniform draw using a greedy pairwise intersection-loss heuristic. Even disjoint lines can
+/// both match 3+ in a six-ball draw, so K·p is generally only an upper bound, not achievable odds.
+/// When the pool can no longer supply low-overlap lines the constraint relaxes one ball at a time.
 /// Model scores only break ties between equally valid lines; they cannot raise the odds.</summary>
 public static class PortfolioOptimizer
 {
@@ -68,10 +67,10 @@ public static class PortfolioOptimizer
         var selectedSets = new List<int[]>(lineCount);
         var selectedKeys = new HashSet<string>();
         var packing = new Packing(pickCount, poolSize);
-        // Exact probability that a draw gives 4+ to both of two lines sharing s balls: the loss
+        // Exact probability that a draw gives 3+ to both of two lines sharing s balls: the loss
         // each new line inflicts on the union bound, per earlier line it overlaps with.
         var pairTerm = Enumerable.Range(0, pickCount + 1)
-            .Select(s => PairwiseFourPlusProbability(poolSize, pickCount, s)).ToArray();
+            .Select(s => PairwiseThreePlusProbability(poolSize, pickCount, s)).ToArray();
 
         while (selected.Count < lineCount)
         {
@@ -79,7 +78,7 @@ public static class PortfolioOptimizer
             double bestLoss = double.PositiveInfinity;
             double bestScore = double.NegativeInfinity;
             // Tier t admits lines sharing at most t balls with every earlier line.
-            for (int tier = 1; tier < pickCount && best is null; tier++)
+            for (int tier = 0; tier < pickCount && best is null; tier++)
             {
                 for (int attempt = 0; attempt < ConstructionsPerLine; attempt++)
                 {
@@ -116,21 +115,23 @@ public static class PortfolioOptimizer
 
         var randomPortfolio = DistinctRandomLines(
             new Random(randomSeed + 991), legalNumbers, pickCount, lineCount);
-        double single = Backtester.FourPlusProbability(poolSize, pickCount);
+        double single = Backtester.ThreePlusProbability(poolSize, pickCount);
+        var coverage = Simulate(selectedSets, poolSize, pickCount, randomSeed);
         return new PortfolioResult(
             selected,
-            ComputeOdds(selectedSets, poolSize, pickCount),
-            Simulate(selectedSets, poolSize, pickCount, randomSeed + 1009),
+            ComputeOdds(selectedSets, poolSize, pickCount, coverage),
+            coverage,
             Simulate(randomPortfolio, poolSize, pickCount, randomSeed + 2003),
             single,
-            $"P(at least one of K={lineCount} fixed lines matches at least four main numbers in a round)");
+            $"P(at least one of K={lineCount} fixed lines matches at least three main numbers in a round)");
     }
 
-    /// <summary>P(at least one line matches 4+) by inclusion–exclusion truncated at pairs.
-    /// Exact whenever no two lines share enough balls for one draw to give both 4+ matches.</summary>
-    public static PortfolioOdds ComputeOdds(IReadOnlyList<int[]> lines, int poolSize, int pickCount)
+    /// <summary>Exact for one/two lines or mutually exclusive hit events; otherwise estimated
+    /// by simulation because truncating inclusion–exclusion can give useless bounds.</summary>
+    public static PortfolioOdds ComputeOdds(
+        IReadOnlyList<int[]> lines, int poolSize, int pickCount, PortfolioSimulation? simulation = null)
     {
-        double single = Backtester.FourPlusProbability(poolSize, pickCount);
+        double single = Backtester.ThreePlusProbability(poolSize, pickCount);
         var pairTerm = new double?[pickCount + 1];
         double total = lines.Count * single;
         int maxOverlap = 0;
@@ -139,18 +140,19 @@ public static class PortfolioOptimizer
             {
                 int shared = lines[i].Intersect(lines[j]).Count();
                 maxOverlap = Math.Max(maxOverlap, shared);
-                pairTerm[shared] ??= PairwiseFourPlusProbability(poolSize, pickCount, shared);
+                pairTerm[shared] ??= PairwiseThreePlusProbability(poolSize, pickCount, shared);
                 total -= pairTerm[shared]!.Value;
             }
 
-        // Two lines can only both match 4+ of the same pickCount balls if they share 8 - pickCount.
-        bool exact = lines.Count < 2 || maxOverlap < Math.Max(0, 8 - pickCount);
-        return new PortfolioOdds(single, Math.Max(0, total), exact, maxOverlap);
+        bool exact = lines.Count <= 2 || maxOverlap < Math.Max(0, 6 - pickCount);
+        double probability = exact ? Math.Clamp(total, 0, 1) :
+            (simulation ?? Simulate(lines, poolSize, pickCount)).Probability;
+        return new PortfolioOdds(single, probability, exact, maxOverlap);
     }
 
-    /// <summary>P(two specific lines that share <paramref name="shared"/> balls both match 4+
+    /// <summary>P(two specific lines that share <paramref name="shared"/> balls both match 3+
     /// main numbers in one uniform draw of <paramref name="pickCount"/> balls).</summary>
-    public static double PairwiseFourPlusProbability(int poolSize, int pickCount, int shared)
+    public static double PairwiseThreePlusProbability(int poolSize, int pickCount, int shared)
     {
         int only = pickCount - shared;          // balls unique to each line
         int outside = poolSize - 2 * pickCount + shared;
@@ -160,15 +162,15 @@ public static class PortfolioOptimizer
                 for (int c = 0; c <= only; c++)
                 {
                     int o = pickCount - a - b - c;
-                    if (o < 0 || a + b < 4 || a + c < 4) continue;
+                    if (o < 0 || a + b < 3 || a + c < 3) continue;
                     count += Choose(shared, a) * Choose(only, b) * Choose(only, c) * Choose(outside, o);
                 }
         return count / Choose(poolSize, pickCount);
     }
 
-    /// <summary>Lines needed so P(at least one 4+ match on a draw night with
+    /// <summary>Lines needed so P(at least one 3+ match on a draw night with
     /// <paramref name="rounds"/> independent rounds) reaches <paramref name="target"/>,
-    /// assuming the optimal (pairwise overlap ≤ 1) design.</summary>
+    /// as a necessary lower bound from the union bound, not an achievable guarantee.</summary>
     public static int LinesForTarget(double target, double singleLineProbability, int rounds)
     {
         if (target <= 0) return 0;
@@ -189,7 +191,7 @@ public static class PortfolioOptimizer
         for (int i = 0; i < trials; i++)
         {
             var draw = RandomSet(rng, poolSize, pickCount);
-            if (portfolio.Any(line => Backtester.CountMatches(line, draw) >= 4)) hits++;
+            if (portfolio.Any(line => Backtester.CountMatches(line, draw) >= 3)) hits++;
         }
 
         var (low, high) = Backtester.WilsonInterval(hits, trials);
@@ -209,7 +211,7 @@ public static class PortfolioOptimizer
 
         public void Add(int[] line)
         {
-            for (int size = 2; size <= pickCount; size++)
+            for (int size = 1; size <= pickCount; size++)
                 foreach (var key in SubsetKeys(line, size)) used[size].Add(key);
             var mask = new bool[poolSize + 1];
             foreach (var n in line)
@@ -220,7 +222,7 @@ public static class PortfolioOptimizer
             presence.Add(mask);
         }
 
-        /// <summary>Sum over earlier lines of P(this line and that line both match 4+).</summary>
+        /// <summary>Sum over earlier lines of P(this line and that line both match 3+).</summary>
         public double OverlapLoss(int[] line, double[] pairTerm)
         {
             double loss = 0;

@@ -125,7 +125,7 @@ export interface PortfolioSimulationDto {
   probability: number;
   ciLow: number;
   ciHigh: number;
-  randomDistinctProbability: number;
+  randomDistinctProbability: number | null;
 }
 
 export interface PortfolioDto {
@@ -137,12 +137,12 @@ export interface PortfolioDto {
   lineCount: number;
   roundCount: number;
   objective: string;
-  singleLineFourPlusProbability: number;
-  portfolioFourPlusProbability: number;
+  singleLineThreePlusProbability: number;
+  portfolioThreePlusProbability: number;
   probabilityIsExact: boolean;
-  anyRoundFourPlusProbability: number;
+  anyRoundThreePlusProbability: number;
   maxPairwiseOverlap: number;
-  linesForEvenOdds: number;
+  minimumLinesForEvenOdds: number;
   simulation: PortfolioSimulationDto | null;
   bestMatches: number | null;
   bestMatchesRound: number | null;
@@ -170,10 +170,10 @@ export interface StrategyBacktestDto {
   pct1: number;
   pct2: number;
   pct3Plus: number;
-  fourPlusHits: number;
-  fourPlusRate: number;
-  fourPlusCiLow: number;
-  fourPlusCiHigh: number;
+  threePlusHits: number;
+  threePlusRate: number;
+  threePlusCiLow: number;
+  threePlusCiHigh: number;
   isBest: boolean;
   isLearned: boolean;
 }
@@ -189,8 +189,8 @@ export interface BacktestingDto {
   randomPct1: number;
   randomPct2: number;
   randomPct3Plus: number;
-  randomFourPlusProbability: number;
-  randomExpectedFourPlusHits: number;
+  randomThreePlusProbability: number;
+  randomExpectedThreePlusHits: number;
   verdict: string;
 }
 

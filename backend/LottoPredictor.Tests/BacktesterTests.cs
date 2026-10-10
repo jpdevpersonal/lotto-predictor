@@ -80,12 +80,15 @@ public class BacktesterTests
         Assert.Equal(1.0, dist.Sum(), 6);
         double mean = dist.Select((p, k) => p * k).Sum();
         Assert.Equal(36.0 / 59.0, mean, 6);
-        Assert.Equal(0.00046583, Backtester.FourPlusProbability(59, 6), 8);
-        Assert.Equal(0.00010667, Backtester.FourPlusProbability(50, 5), 8);
+        Assert.Equal(0.01086410, Backtester.ThreePlusProbability(59, 6), 8);
+        Assert.Equal(dist.Skip(3).Sum(), Backtester.ThreePlusProbability(59, 6), 12);
+        Assert.Equal(Backtester.HypergeometricMatchDistribution(50, 5).Skip(3).Sum(),
+            Backtester.ThreePlusProbability(50, 5), 12);
+        Assert.Equal(0, Backtester.ThreePlusProbability(12, 2));
     }
 
     [Fact]
-    public void Wilson_interval_handles_zero_four_plus_hits()
+    public void Wilson_interval_handles_zero_three_plus_hits()
     {
         var (low, high) = Backtester.WilsonInterval(0, 200);
         Assert.Equal(0, low);
@@ -147,6 +150,9 @@ public class BacktesterTests
         Assert.Equal(30, report.HoldoutEvaluated);
         Assert.Equal(30, report.Best.Evaluated);
         Assert.Contains("held-out", report.Verdict);
+        Assert.All(report.SelectionStrategies, s => Assert.Equal(60, s.Evaluated));
+        Assert.All(report.Strategies, s =>
+            Assert.Equal(s.MatchCounts.Skip(3).Sum(), s.ThreePlusHits));
     }
 
     [Fact]
@@ -163,6 +169,28 @@ public class BacktesterTests
         var draws = RandomHistory(50, 59);
         Assert.Throws<InvalidOperationException>(
             () => Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 100, warmup: 150));
+    }
+
+    [Fact]
+    public void Default_validation_window_is_longer_and_small_holdouts_warn_about_precision()
+    {
+        Assert.Equal(1000, new LottoPredictor.Core.Services.AnalysisOptions().BacktestEvalWindow);
+        Assert.Equal(1066, Backtester.SelectionCutoff(1400, 1000, 150));
+        var report = Backtester.Run(RandomHistory(180, 59), [ScoringStrategy.Candidates[0]],
+            evalWindow: 12, warmup: 150);
+        Assert.Equal(8, report.SelectionEvaluated);
+        Assert.Equal(4, report.HoldoutEvaluated);
+        Assert.Contains("precision is limited", report.Verdict);
+    }
+
+    [Fact]
+    public void Uniform_set_probabilities_have_zero_information_against_uniform()
+    {
+        var step = new Backtester.InformationStep(
+            new double[10], Enumerable.Range(0, 10).Select(i => i < 3).ToArray());
+        var result = Backtester.InformationTest([step, step], [step, step]);
+        Assert.Equal(0, result.LogScore, 12);
+        Assert.Equal(0, result.Z);
     }
 
     [Fact]
@@ -225,6 +253,6 @@ public class BacktesterTests
         var report = Backtester.Run(draws, ScoringStrategy.Candidates, evalWindow: 100, warmup: 150);
         Assert.True(report.InformationZ > 2.326);
         Assert.True(report.InformationLogScore > 0);
-        Assert.Contains("real signal", report.Verdict);
+        Assert.Contains("confirm this prospectively", report.Verdict);
     }
 }

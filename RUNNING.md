@@ -90,9 +90,9 @@ dotnet test
   `dotnet run --launch-profile http -- --CsvImportPath=/path/to/file.csv`
 - To point at a different EuroMillions CSV:
   `dotnet run --launch-profile http -- --EuroMillionsCsvImportPath=/path/to/euromillions.csv`
-- The dashboard portfolio control chooses fixed `K` lines, defaulting to `1`. The reported primary
-  objective is `P(at least one of K fixed lines matches at least four main numbers)`. Main-number
-  matches are evaluated per line; four numbers scattered across different lines are not counted as
+- The dashboard portfolio control chooses fixed `K` lines, defaulting to `3`. The reported primary
+  objective is `P(at least one of K fixed lines matches at least three main numbers)`. Main-number
+  matches are evaluated per line; three numbers scattered across different lines are not counted as
   a hit. Bonus balls and Lucky Stars are shown separately.
 - To reproduce the revised comparison, start the API and request the same `count` for each supported
   game:
@@ -104,11 +104,18 @@ curl -H 'X-Lottery: euromillions' 'http://localhost:5080/api/backtesting'
 curl -H 'X-Lottery: euromillions' 'http://localhost:5080/api/predictions/lines?count=50'
 ```
 
-  The backtesting response contains exact single-line random four-plus probability, expected random
-  four-plus hits, observed strategy hit counts/rates, and confidence intervals. The lines response
+  The backtesting response contains exact single-line random three-plus probability, expected random
+  three-plus hits, observed strategy hit counts/rates, and confidence intervals. The lines response
   contains coverage-optimised portfolio probability and a matched random-distinct portfolio baseline
   estimated with reproducible simulation. These comparisons do not assume historical results contain
   a predictive advantage.
+- Validation defaults to the last 1,000 available draws after a 150-draw warmup: the earlier
+  two-thirds select the strategy, the later third reports performance. Genetic training is replayed
+  from clean built-in seeds before the holdout; persisted winners are not reused. Sparse-hit
+  warnings remain important even with this longer window. Historical checks are exploratory.
+- Portfolio probabilities are generally Monte Carlo estimates with confidence intervals, not
+  `K × single-line odds`. The displayed minimum line counts are lower bounds, not guarantees.
+  API fields now use `threePlus`; `minimumLinesForEvenOdds` replaces `linesForEvenOdds`.
 - Recommended VS Code extensions: **C# Dev Kit** for backend debugging (F5 works against the
   `http` launch profile); the built-in TypeScript support handles the frontend.
 - The API port is pinned to 5080 in

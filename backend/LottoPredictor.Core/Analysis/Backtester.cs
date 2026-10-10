@@ -7,18 +7,19 @@ public sealed record StrategyBacktest(
     double StdMatches,
     double RecencyWeightedAvg, // exponential-decay average (half-life 50 draws): recent form
     int[] MatchCounts,
-    int FourPlusHits,
-    double FourPlusRate,
-    double FourPlusCiLow,
-    double FourPlusCiHigh); // index = number of matches 0..6
+    int ThreePlusHits,
+    double ThreePlusRate,
+    double ThreePlusCiLow,
+    double ThreePlusCiHigh); // index = number of matches 0..6
 
 public sealed class BacktestReport
 {
     public required IReadOnlyList<StrategyBacktest> Strategies { get; init; }
+    public required IReadOnlyList<StrategyBacktest> SelectionStrategies { get; init; }
     public required StrategyBacktest Best { get; init; }
     public required double RandomExpectedMatches { get; init; }
-    public required double RandomFourPlusProbability { get; init; }
-    public required double RandomExpectedFourPlusHits { get; init; }
+    public required double RandomThreePlusProbability { get; init; }
+    public required double RandomExpectedThreePlusHits { get; init; }
     public required double[] RandomMatchDistribution { get; init; } // P(k matches), k=0..6
     public required StrategyBacktest RandomSimulated { get; init; }
     public required string Verdict { get; init; }
@@ -32,34 +33,30 @@ public sealed class BacktestReport
     /// run. This is what the hedge ensemble would use for the next real prediction.</summary>
     public required IReadOnlyDictionary<string, double> HedgeWeights { get; init; }
 
-    /// <summary>Information test for the chosen strategy's ball ranking. Its scores are turned
-    /// into per-ball probabilities with a softmax whose temperature is fitted on the selection
-    /// draws only; the held-out draws are then scored by the mean log-likelihood ratio (nats per
-    /// draw) of those probabilities against the uniform draw. Zero means the ranking carries no
-    /// information; this test is roughly two orders of magnitude more sensitive than counting
-    /// four-plus hits, which are far too rare to measure over a few hundred draws.</summary>
+    /// <summary>Fixed-size set probabilities proportional to exp(temperature * sum of scores).
+    /// Temperature is fitted on selection draws only; the holdout log score is relative to
+    /// uniform sampling without replacement. This provides denser feedback than sparse hits.</summary>
     public required double InformationTemperature { get; init; }
     public required double InformationLogScore { get; init; }
     public required double InformationZ { get; init; }
-    /// <summary>z-score of the chosen strategy's held-out average matches against the exact
+    /// <summary>z-score of the chosen strategy's held-out average matches against the
     /// uniform expectation pick²/pool.</summary>
     public required double AvgMatchesZ { get; init; }
 }
 
-/// <summary>Walk-forward backtesting. For every evaluation draw the engine only ever receives the
-/// draws that came strictly before it — the prefix list is materialised before the target draw is
-/// touched, so future data cannot leak into a historical prediction.</summary>
+/// <summary>Walk-forward feature histories contain only strict prefixes. Callers must also
+/// train candidate weights before the holdout, as AnalysisService does.</summary>
 public static class Backtester
 {
     public const string EnsembleName = "hedge-ensemble";
 
-    /// <summary>Multiplicative-weights learning rate: weight *= exp(eta * matches) per draw.</summary>
+    /// <summary>Multiplicative-weights learning rate for the three-plus hit indicator.</summary>
     private const double HedgeEta = 0.10;
 
     public static BacktestReport Run(
         IReadOnlyList<DrawEvent> draws,
         IReadOnlyList<ScoringStrategy> strategies,
-        int evalWindow = 200,
+        int evalWindow = 1000,
         int warmup = 150,
         int randomSeed = 20260831,
         int? configuredPoolSize = null,
@@ -70,7 +67,7 @@ public static class Backtester
 
         int start = Math.Max(warmup, draws.Count - evalWindow);
         int evaluated = draws.Count - start;
-        int selectionEvaluated = Math.Max(1, evaluated * 2 / 3);
+        int selectionEvaluated = SelectionCutoff(draws.Count, evalWindow, warmup) - start;
         int holdoutEvaluated = evaluated - selectionEvaluated;
         if (holdoutEvaluated < 1)
             throw new InvalidOperationException("Need at least two evaluation draws to reserve a chronological holdout.");
@@ -85,7 +82,7 @@ public static class Backtester
         var randomMatches = new List<int>(evaluated);
         var rng = new Random(randomSeed);
         var expectedMatches = new List<double>(evaluated);
-        var expectedFourPlus = new List<double>(evaluated);
+        var expectedThreePlus = new List<double>(evaluated);
 
         for (int i = start; i < draws.Count; i++)
         {
@@ -118,7 +115,7 @@ public static class Backtester
             double norm = 0;
             foreach (var t in stepScores)
             {
-                hedge[t.Strategy.Name] *= Math.Exp(HedgeEta * t.Matches);
+                hedge[t.Strategy.Name] *= Math.Exp(HedgeEta * (t.Matches >= 3 ? 1 : 0));
                 norm += hedge[t.Strategy.Name];
             }
             if (norm <= 0 || double.IsNaN(norm) || double.IsInfinity(norm))
@@ -129,7 +126,7 @@ public static class Backtester
             int pool = fs.Pool.NextPoolSize;
             int pickCount = fs.PickCount;
             expectedMatches.Add((double)(pickCount * pickCount) / pool);
-            expectedFourPlus.Add(FourPlusProbability(pool, pickCount));
+            expectedThreePlus.Add(ThreePlusProbability(pool, pickCount));
             randomMatches.Add(CountMatches(RandomSet(rng, pool, pickCount), actual));
         }
 
@@ -144,8 +141,8 @@ public static class Backtester
             ensembleMatches.Take(selectionEvaluated).ToList()));
 
         var selected = selectionResults
-            .OrderByDescending(r => r.FourPlusRate)
-            .ThenByDescending(r => r.RecencyWeightedAvg)
+            .OrderByDescending(r => r.ThreePlusRate)
+            .ThenByDescending(r => r.AvgMatches)
             .ThenBy(r => r.Strategy.Name)
             .First();
 
@@ -158,16 +155,16 @@ public static class Backtester
         var best = results.Single(r => r.Strategy.Name == selected.Strategy.Name);
 
         double randomExpected = expectedMatches.Skip(selectionEvaluated).Average();
-        double randomFourPlusProbability = expectedFourPlus.Skip(selectionEvaluated).Average();
-        double randomExpectedFourPlusHits = expectedFourPlus.Skip(selectionEvaluated).Sum();
+        double randomThreePlusProbability = expectedThreePlus.Skip(selectionEvaluated).Average();
+        double randomExpectedThreePlusHits = expectedThreePlus.Skip(selectionEvaluated).Sum();
         var randomSummary = Summarise(
             new ScoringStrategy("random-baseline", 0, 0, 0, 0, 0, 0),
             randomMatches.Skip(selectionEvaluated).ToList());
 
         // The strategy was frozen before the holdout, so a single exact binomial test is valid.
-        // A normal approximation is unsafe here because four-plus hits are very rare.
+        // A normal approximation is unsafe here because three-plus hits are very rare.
         double pValue = StatFunctions.BinomialUpperTail(
-            best.Evaluated, best.FourPlusHits, randomFourPlusProbability);
+            best.Evaluated, best.ThreePlusHits, randomThreePlusProbability);
 
         var bestSteps = scoreSteps[best.Strategy.Name];
         var (temperature, logScore, informationZ) = InformationTest(
@@ -177,30 +174,35 @@ public static class Backtester
             : 0;
         string information = informationZ > 2.326
             ? $"Information test: the ranking's calibrated probabilities beat uniform by {logScore:0.0000} nats/draw " +
-              $"on the holdout (z={informationZ:+0.00}, temperature {temperature:0.00}); this is a real signal worth tracking prospectively."
+              $"on the holdout (z={informationZ:+0.00}, temperature {temperature:0.00}); confirm this prospectively before claiming an edge."
             : $"Information test: the ranking's calibrated probabilities score {logScore:+0.0000} nats/draw against uniform " +
               $"on the holdout (z={informationZ:+0.00}; average matches z={avgMatchesZ:+0.00}), i.e. the numbers chosen carry no " +
-              "detectable information. Every line then has the same 4+ chance and only the count of non-overlapping lines matters.";
+              "detectable information. Under fair independent draws, every single line has the same 3+ chance.";
         string verdict = pValue >= 0.05
-            ? $"No measurable advantage over random selection for the four-plus objective. Best strategy '{best.Strategy.Name}' hit " +
-              $"4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} held-out draws " +
-              $"({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line; " +
+            ? $"No measurable advantage over random selection for the three-plus objective. Best strategy '{best.Strategy.Name}' hit " +
+              $"3+ main numbers {best.ThreePlusHits} time(s) in {best.Evaluated} held-out draws " +
+              $"({100.0 * best.ThreePlusRate:0.###}% vs {100.0 * randomThreePlusProbability:0.###}% exact random probability per line; " +
               $"exact one-sided binomial p={pValue:0.####}). Average matches remain secondary: " +
               $"{best.AvgMatches:0.000} vs {randomExpected:0.000} expected."
-            : $"Strategy '{best.Strategy.Name}' hit 4+ main numbers {best.FourPlusHits} time(s) in {best.Evaluated} " +
-              $"held-out draws ({100.0 * best.FourPlusRate:0.###}% vs {100.0 * randomFourPlusProbability:0.###}% exact random probability per line; " +
+            : $"Strategy '{best.Strategy.Name}' hit 3+ main numbers {best.ThreePlusHits} time(s) in {best.Evaluated} " +
+              $"held-out draws ({100.0 * best.ThreePlusRate:0.###}% vs {100.0 * randomThreePlusProbability:0.###}% exact random probability per line; " +
               $"exact one-sided binomial p={pValue:0.####}). This is only a sparse historical signal; " +
               "future prospective tracking is still required before treating it as an edge.";
         verdict += " " + information;
+        verdict += $" Selection used {selectionEvaluated} earlier draws; the holdout used {holdoutEvaluated}. " +
+            "Repeated historical checks are exploratory, not independent evidence of an edge.";
+        if (randomExpectedThreePlusHits < 10)
+            verdict += " Fewer than 10 random three-plus hits are expected on this holdout; precision is limited.";
 
         var pool2 = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
         return new BacktestReport
         {
             Strategies = results,
+            SelectionStrategies = selectionResults,
             Best = best,
             RandomExpectedMatches = randomExpected,
-            RandomFourPlusProbability = randomFourPlusProbability,
-            RandomExpectedFourPlusHits = randomExpectedFourPlusHits,
+            RandomThreePlusProbability = randomThreePlusProbability,
+            RandomExpectedThreePlusHits = randomExpectedThreePlusHits,
             RandomMatchDistribution = HypergeometricMatchDistribution(pool2.PoolSize, draws[0].Numbers.Length),
             RandomSimulated = randomSummary,
             Verdict = verdict,
@@ -213,6 +215,16 @@ public static class Backtester
             InformationZ = informationZ,
             AvgMatchesZ = avgMatchesZ,
         };
+    }
+
+    public static int SelectionCutoff(int drawCount, int evalWindow, int warmup)
+    {
+        if (evalWindow < 2) throw new ArgumentOutOfRangeException(nameof(evalWindow));
+        if (warmup < 1) throw new ArgumentOutOfRangeException(nameof(warmup));
+        if (drawCount <= warmup + 2)
+            throw new InvalidOperationException($"Need more than {warmup + 2} draws to backtest.");
+        int start = Math.Max(warmup, drawCount - evalWindow);
+        return start + Math.Max(1, (drawCount - start) * 2 / 3);
     }
 
     /// <summary>One walk-forward step's inputs to the information test.</summary>
@@ -228,8 +240,7 @@ public static class Backtester
         }
     }
 
-    /// <summary>Mean log-likelihood ratio (nats/draw) of softmax(β·score) ball probabilities
-    /// versus uniform, over the drawn balls of each step.</summary>
+    /// <summary>Log-likelihood ratio of fixed-size set probabilities versus uniform.</summary>
     private static double[] LogLikelihoodRatios(IReadOnlyList<InformationStep> steps, double beta)
     {
         var result = new double[steps.Count];
@@ -239,15 +250,21 @@ public static class Backtester
             int pool = s.Length;
             int pick = steps[t].Drawn.Count(d => d);
             double max = s.Max();
-            double sumExp = 0;
-            for (int i = 0; i < pool; i++) sumExp += Math.Exp(beta * (s[i] - max));
-            double q = (double)pick / pool;
-            double llr = 0;
+            // Fixed-size sets are sampled without replacement. The elementary symmetric
+            // polynomial normalises their product weights; a per-ball softmax does not.
+            var normalizer = new double[pick + 1];
+            normalizer[0] = 1;
+            for (int i = 0; i < pool; i++)
+            {
+                double weight = Math.Exp(beta * (s[i] - max));
+                for (int k = Math.Min(pick, i + 1); k >= 1; k--)
+                    normalizer[k] += weight * normalizer[k - 1];
+            }
+            double llr = Math.Log(Choose(pool, pick)) - Math.Log(normalizer[pick]);
             for (int i = 0; i < pool; i++)
             {
                 if (!steps[t].Drawn[i]) continue;
-                double p = Math.Min(1.0, pick * Math.Exp(beta * (s[i] - max)) / sumExp);
-                llr += Math.Log(p / q);
+                llr += beta * (s[i] - max);
             }
             result[t] = llr;
         }
@@ -261,7 +278,7 @@ public static class Backtester
     {
         if (selection.Count == 0 || holdout.Count < 2) return (0, 0, 0);
 
-        double lo = -4, hi = 4;
+        double lo = 0, hi = 4;
         const double phi = 0.6180339887498949;
         double a = hi - phi * (hi - lo), b = lo + phi * (hi - lo);
         double fa = LogLikelihoodRatios(selection, a).Average();
@@ -302,8 +319,8 @@ public static class Backtester
         return dist;
     }
 
-    public static double FourPlusProbability(int poolSize, int pickCount) =>
-        HypergeometricMatchDistribution(poolSize, pickCount).Skip(4).Sum();
+    public static double ThreePlusProbability(int poolSize, int pickCount) =>
+        HypergeometricMatchDistribution(poolSize, pickCount).Skip(3).Sum();
 
     private static double Choose(int n, int k)
     {
@@ -341,8 +358,8 @@ public static class Backtester
     {
         var counts = new int[7];
         foreach (var m in matches) counts[m]++;
-        int fourPlusHits = counts.Skip(4).Sum();
-        var (ciLow, ciHigh) = WilsonInterval(fourPlusHits, matches.Count);
+        int threePlusHits = counts.Skip(3).Sum();
+        var (ciLow, ciHigh) = WilsonInterval(threePlusHits, matches.Count);
         double avg = matches.Count > 0 ? matches.Average() : 0;
         double var = matches.Count > 1
             ? matches.Sum(m => (m - avg) * (m - avg)) / (matches.Count - 1)
@@ -360,7 +377,7 @@ public static class Backtester
 
         return new StrategyBacktest(
             strategy, matches.Count, avg, Math.Sqrt(var), recency, counts,
-            fourPlusHits, matches.Count > 0 ? (double)fourPlusHits / matches.Count : 0, ciLow, ciHigh);
+            threePlusHits, matches.Count > 0 ? (double)threePlusHits / matches.Count : 0, ciLow, ciHigh);
     }
 
     /// <summary>Zero-copy read-only view of the first N items of a list.</summary>

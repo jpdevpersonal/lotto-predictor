@@ -1,4 +1,5 @@
 using LottoPredictor.Core.Data;
+using LottoPredictor.Core.Analysis;
 using LottoPredictor.Core.Dtos;
 using LottoPredictor.Core.Models;
 using LottoPredictor.Core.Services;
@@ -139,6 +140,36 @@ public sealed class ServiceTests : IDisposable
 
         Assert.Equal(first.Draws.Count, second.Draws.Count);
         Assert.Equal(first.LearningGeneration, second.LearningGeneration);
+        Assert.Equal(first.ActiveStrategy, second.ActiveStrategy);
+        Assert.Equal(first.AllStrategies, second.AllStrategies);
+    }
+
+    [Fact]
+    public async Task Saved_winners_and_changed_holdout_cannot_influence_training_or_selection()
+    {
+        SeedDraws(200);
+        var first = await _analysis.GetSnapshotAsync();
+        using (var db = _factory.CreateDbContext())
+        {
+            db.LearnedStrategies.Add(new LearnedStrategy
+            {
+                Name = "learned-contaminated", WLongTerm = 100, Generation = 99,
+            });
+            int cutoff = Backtester.SelectionCutoff(200, 30, 150);
+            foreach (var draw in db.Draws.Where(d => d.Sequence > cutoff))
+            {
+                draw.N1 = 1; draw.N2 = 2; draw.N3 = 3;
+                draw.N4 = 4; draw.N5 = 5; draw.N6 = 6;
+            }
+            await db.SaveChangesAsync();
+        }
+        _analysis.Invalidate();
+        var second = await _analysis.GetSnapshotAsync();
+        Assert.Equal(first.AllStrategies, second.AllStrategies);
+        Assert.Equal(first.ActiveStrategy, second.ActiveStrategy);
+        Assert.Equal(first.Backtest.SelectionStrategies.SelectMany(s => s.MatchCounts),
+            second.Backtest.SelectionStrategies.SelectMany(s => s.MatchCounts));
+        Assert.DoesNotContain(second.AllStrategies, s => s.Name == "learned-contaminated");
     }
 
     [Fact]
@@ -291,7 +322,7 @@ public sealed class ServiceTests : IDisposable
         Assert.Equal(200, prediction.CutoffSequence);
         Assert.NotNull(prediction.Explanation);
         Assert.Equal(6, prediction.Explanation!.Count);
-        Assert.StartsWith("v3/", prediction.ModelVersion);
+        Assert.StartsWith("v4-three-plus/", prediction.ModelVersion);
         Assert.Null(prediction.Matches);
 
         var latest = await _predictionService.GetLatestAsync();
@@ -326,9 +357,10 @@ public sealed class ServiceTests : IDisposable
         Assert.NotNull(portfolio.PortfolioId);
         Assert.Equal(8, portfolio.LineCount);
         Assert.Equal(2, portfolio.RoundCount);
-        Assert.True(portfolio.ProbabilityIsExact);
-        Assert.Equal(8 * portfolio.SingleLineFourPlusProbability, portfolio.PortfolioFourPlusProbability, 9);
-        Assert.Equal(1 - Math.Pow(1 - portfolio.PortfolioFourPlusProbability, 2), portfolio.AnyRoundFourPlusProbability, 9);
+        Assert.False(portfolio.ProbabilityIsExact);
+        Assert.NotNull(portfolio.Simulation);
+        Assert.Equal(portfolio.Simulation.Probability, portfolio.PortfolioThreePlusProbability, 9);
+        Assert.Equal(1 - Math.Pow(1 - portfolio.PortfolioThreePlusProbability, 2), portfolio.AnyRoundThreePlusProbability, 9);
         Assert.All(portfolio.Lines, line => Assert.NotNull(line.Prediction));
         Assert.Null(portfolio.BestMatches);
 
@@ -348,7 +380,7 @@ public sealed class ServiceTests : IDisposable
         Assert.Equal(4, latest.BestMatches);
         Assert.Equal(1, latest.BestMatchesRound);
         Assert.Equal(3, latest.BestMatchesRank);
-        Assert.Equal(portfolio.PortfolioFourPlusProbability, latest.PortfolioFourPlusProbability, 9);
+        Assert.Equal(portfolio.PortfolioThreePlusProbability, latest.PortfolioThreePlusProbability, 9);
     }
 
     [Fact]

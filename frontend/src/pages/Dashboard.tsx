@@ -42,8 +42,7 @@ function oneIn(probability: number) {
   return `1 in ${Math.round(1 / probability).toLocaleString()}`;
 }
 
-/** Lines needed for a target chance of a 4+ match on one draw night, with the optimal
- * (pairwise overlap ≤ 1) design where the portfolio chance is exactly K × single-line odds. */
+/** Necessary minimum from the union bound, not an achievable-odds guarantee. */
 function linesForTarget(target: number, singleLine: number, rounds: number) {
   return Math.ceil((1 - Math.pow(1 - target, 1 / rounds)) / singleLine - 1e-9);
 }
@@ -216,23 +215,13 @@ export default function Dashboard({
         )}
         {backtest && (
           <p className="muted">
-            Any single line has a {oneIn(backtest.randomFourPlusProbability)}{" "}
-            chance of 4+ matches per round and averages{" "}
+            Any single line has a {oneIn(backtest.randomThreePlusProbability)}{" "}
+            chance of 3+ matches per round and averages{" "}
             {backtest.randomExpectedMatches.toFixed(2)} matches; no choice of
-            numbers changes that in a fair draw. Only playing more
-            non-overlapping lines raises the odds — use the portfolio below.
-            With K={portfolioSize} line{portfolioSize === 1 ? "" : "s"} sharing
-            at most one ball, the best any method can do is{" "}
-            {oneIn(
-              1 -
-                Math.pow(
-                  1 - portfolioSize * backtest.randomFourPlusProbability,
-                  lottery.roundCount,
-                ),
-            )}{" "}
-            per draw night ({lottery.roundCount} round
-            {lottery.roundCount === 1 ? "" : "s"}); the portfolio builder
-            reaches that ceiling exactly.
+            numbers changes that in a fair independent draw. More distinct lines
+            can improve coverage, at greater cost. Even disjoint lines can both
+            match three numbers in the same six-ball draw; portfolio odds are
+            generally estimates, not K times single-line odds.
           </p>
         )}
 
@@ -293,33 +282,35 @@ export default function Dashboard({
                 share at most {portfolio.maxPairwiseOverlap} ball
                 {portfolio.maxPairwiseOverlap === 1 ? "" : "s"}
                 {portfolio.probabilityIsExact
-                  ? ", so no single draw can pay two lines and the portfolio reaches the theoretical maximum K × single-line odds exactly."
-                  : " (pool nearly saturated; odds below are a tight lower bound)."}
+                  ? ". Odds below are exact for this portfolio."
+                  : ". Odds below are reproducible Monte Carlo estimates, not guaranteed or globally optimal."}
               </p>
               <p className="verdict compact">
-                Chance of at least one line matching 4+ main numbers:{" "}
+                Chance of at least one line matching 3+ main numbers:{" "}
                 <strong>
-                  {formatPct(portfolio.anyRoundFourPlusProbability)}
+                  {formatPct(portfolio.anyRoundThreePlusProbability)}
                 </strong>{" "}
-                ({oneIn(portfolio.anyRoundFourPlusProbability)}) across{" "}
+                ({oneIn(portfolio.anyRoundThreePlusProbability)}) across{" "}
                 {portfolio.roundCount} round
                 {portfolio.roundCount === 1 ? "" : "s"};{" "}
-                {formatPct(portfolio.portfolioFourPlusProbability)} per round.
+                {formatPct(portfolio.portfolioThreePlusProbability)} per round.
                 Single line:{" "}
-                {formatPct(portfolio.singleLineFourPlusProbability)} per round (
-                {oneIn(portfolio.singleLineFourPlusProbability)}).
+                {formatPct(portfolio.singleLineThreePlusProbability)} per round (
+                {oneIn(portfolio.singleLineThreePlusProbability)}).
                 {portfolio.simulation &&
-                  ` Monte Carlo check: ${formatPct(portfolio.simulation.probability)} (95% CI ${formatPct(portfolio.simulation.ciLow)}–${formatPct(portfolio.simulation.ciHigh)}, ${portfolio.simulation.trials.toLocaleString()} draws); ${portfolio.lineCount} random distinct lines: ${formatPct(portfolio.simulation.randomDistinctProbability)}.`}
+                  ` Monte Carlo check: ${formatPct(portfolio.simulation.probability)} (95% CI ${formatPct(portfolio.simulation.ciLow)}–${formatPct(portfolio.simulation.ciHigh)}, ${portfolio.simulation.trials.toLocaleString()} draws).`}
+                {portfolio.simulation?.randomDistinctProbability != null &&
+                  ` ${portfolio.lineCount} random distinct lines: ${formatPct(portfolio.simulation.randomDistinctProbability)}.`}
               </p>
               {portfolio.bestMatches != null && (
                 <p
-                  className={`verdict compact${portfolio.bestMatches >= 4 ? " hit" : ""}`}
+                  className={`verdict compact${portfolio.bestMatches >= 3 ? " hit" : ""}`}
                 >
                   Result: best line #{portfolio.bestMatchesRank} matched{" "}
                   {portfolio.bestMatches} in round {portfolio.bestMatchesRound}
-                  {portfolio.bestMatches >= 4
-                    ? " — 4+ hit."
-                    : " — no 4+ hit this draw."}
+                  {portfolio.bestMatches >= 3
+                    ? " — 3+ hit."
+                    : " — no 3+ hit this draw."}
                 </p>
               )}
             </div>
@@ -332,11 +323,11 @@ export default function Dashboard({
             <thead>
               <tr>
                 <th>
-                  Target chance of a 4+ match on one draw night (
+                  Target chance of a 3+ match on one draw night (
                   {portfolio.roundCount} round
                   {portfolio.roundCount === 1 ? "" : "s"})
                 </th>
-                <th>Lines needed</th>
+                <th>Minimum possible lines (bound only)</th>
               </tr>
             </thead>
             <tbody>
@@ -346,7 +337,7 @@ export default function Dashboard({
                   <td>
                     {linesForTarget(
                       target,
-                      portfolio.singleLineFourPlusProbability,
+                      portfolio.singleLineThreePlusProbability,
                       portfolio.roundCount,
                     ).toLocaleString()}
                   </td>
@@ -354,6 +345,10 @@ export default function Dashboard({
               ))}
             </tbody>
           </table>
+          <p className="muted">
+            These minimum counts do not guarantee the target chance. Use the
+            reported portfolio estimate and its confidence interval.
+          </p>
 
           {bestOf && (
             <div className="best-of-card">
@@ -401,7 +396,7 @@ export default function Dashboard({
                 {line.prediction?.evaluations.map((evaluation) => (
                   <span
                     key={evaluation.evaluatedDrawId}
-                    className={`line-score${evaluation.matches >= 4 ? " hit" : ""}`}
+                    className={`line-score${evaluation.matches >= 3 ? " hit" : ""}`}
                     title={`Round ${evaluation.round}: ${evaluation.actualNumbers.join(" ")}`}
                   >
                     R{evaluation.round}: {evaluation.matches}
@@ -471,8 +466,9 @@ export default function Dashboard({
         <section>
           <h2>Backtesting results</h2>
           <p className="muted">
-            Walk-forward over the last {backtest.evaluatedDraws} draws: each
-            historical prediction used only draws before its target. Active
+            Results cover the last {backtest.evaluatedDraws} chronological holdout
+            draws. Genetic training and strategy selection used earlier data;
+            each holdout prediction used only data before its target. Active
             strategy: <strong>{backtest.activeStrategyName}</strong>.
           </p>
           <table>
@@ -485,8 +481,8 @@ export default function Dashboard({
                 <th>1 match</th>
                 <th>2 match</th>
                 <th>3+ match</th>
-                <th>4+ hits</th>
-                <th>4+ rate</th>
+                <th>3+ hits</th>
+                <th>3+ rate</th>
               </tr>
             </thead>
             <tbody>
@@ -503,11 +499,11 @@ export default function Dashboard({
                   <td>{s.pct1}%</td>
                   <td>{s.pct2}%</td>
                   <td>{s.pct3Plus}%</td>
-                  <td>{s.fourPlusHits}</td>
+                  <td>{s.threePlusHits}</td>
                   <td
-                    title={`95% CI ${formatPct(s.fourPlusCiLow)}-${formatPct(s.fourPlusCiHigh)}`}
+                    title={`95% CI ${formatPct(s.threePlusCiLow)}-${formatPct(s.threePlusCiHigh)}`}
                   >
-                    {formatPct(s.fourPlusRate)}
+                    {formatPct(s.threePlusRate)}
                   </td>
                 </tr>
               ))}
@@ -519,16 +515,16 @@ export default function Dashboard({
                 <td>{backtest.randomPct1}%</td>
                 <td>{backtest.randomPct2}%</td>
                 <td>{backtest.randomPct3Plus}%</td>
-                <td>{backtest.randomExpectedFourPlusHits.toFixed(3)} exp.</td>
-                <td>{formatPct(backtest.randomFourPlusProbability)}</td>
+                <td>{backtest.randomExpectedThreePlusHits.toFixed(3)} exp.</td>
+                <td>{formatPct(backtest.randomThreePlusProbability)}</td>
               </tr>
               <tr className="baseline">
                 <td>random baseline (theoretical)</td>
                 <td>{backtest.randomExpectedMatches.toFixed(4)}</td>
                 <td colSpan={7} className="muted">
-                  exact single-line random 4+ probability:{" "}
-                  {formatPct(backtest.randomFourPlusProbability)}; expected 4+
-                  hits: {backtest.randomExpectedFourPlusHits.toFixed(4)}
+                  exact single-line random 3+ probability:{" "}
+                  {formatPct(backtest.randomThreePlusProbability)}; expected 3+
+                  hits: {backtest.randomExpectedThreePlusHits.toFixed(4)}
                 </td>
               </tr>
             </tbody>
@@ -546,11 +542,11 @@ export default function Dashboard({
             {learning.refreshedUtc
               ? `, refreshed ${learning.refreshedUtc.replace("T", " ").slice(0, 16)} UTC`
               : ""}
-            : each new draw triggers one genetic-optimizer generation — elite
-            weight sets are mutated, crossed over, and challenged by random
-            immigrants, all judged by the same walk-forward backtest. An online
-            hedge ensemble (multiplicative weights) blends every strategy and
-            competes too. Active strategy:{" "}
+            : each analysis replays training from clean built-in seeds using
+            only pre-holdout draws. One generation of mutations, crossovers and
+            random candidates competes on three-plus hits, with average matches
+            as a tie-breaker. Saved winners are for reporting, not reused as
+            training seeds. An online hedge ensemble also competes. Active strategy:{" "}
             <strong>{learning.activeStrategyName}</strong>
             {learning.activeIsLearned && (
               <span className="badge">Learned</span>
@@ -571,7 +567,7 @@ export default function Dashboard({
               <h3>Hedge ensemble weights</h3>
               <p className="muted">
                 Learned online during the walk-forward run — strategies that
-                matched more get exponentially more say in the blended
+                achieved more three-plus hits get exponentially more say in the blended
                 prediction.
               </p>
               <table>
@@ -599,8 +595,8 @@ export default function Dashboard({
                 <tr>
                   <th>Learned strategy</th>
                   <th>Generation</th>
-                  <th>Avg Matches</th>
-                  <th>Recent Avg</th>
+                  <th>Selection Avg Matches</th>
+                  <th>Selection Recent Avg</th>
                   <th>Discovered (UTC)</th>
                 </tr>
               </thead>
@@ -618,8 +614,8 @@ export default function Dashboard({
             </table>
           ) : (
             <p className="muted">
-              No learned strategy currently beats the hand-written ones — the
-              expected state for a fair lottery.
+              No genetic candidate currently beats the built-in ones on the
+              selection data.
             </p>
           )}
 
