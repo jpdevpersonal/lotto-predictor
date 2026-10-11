@@ -4,6 +4,7 @@ A local web application for UK National Lottery and EuroMillions draw histories.
 features, runs walk-forward backtesting over hand-written and machine-learned scoring strategies,
 and generates a ranked prediction targeting **at least three main-number matches on one line**.
 Each analysis replays training from clean seeds and evaluates a later chronological holdout.
+Analysis is manual for UK Lotto, EuroMillions and Set For Life: use **Recalculate** on the dashboard.
 This objective gives more feedback than four-plus, but does not create predictive information:
 fair independent draws give every single line the same odds.
 
@@ -71,6 +72,32 @@ dotnet test
 - Override the import file with `--EuroMillionsCsvImportPath=/path/to/euromillions.csv`.
 
 ## How prediction works
+
+### Manual recalculation
+
+- Adding or correcting results saves and evaluates them immediately, but does not rerun analysis.
+  The last analysis stays visible. The **Recalculate** button is **red** when analysis is missing
+  or stale and **green** when current. Text labels convey the status without relying on colour.
+  New predictions, portfolios and consensus lines are blocked until recalculation succeeds.
+- **Use all available history for training/backtesting** defaults off independently per lottery.
+  Off retains the usual 1,000-draw evaluation window; on evaluates all available history after
+  the 150-draw warmup. Changing the checkbox immediately requests recalculation.
+  Feature calculations already use full history and are unchanged. Full-history backtests can
+  take considerably longer. Hit tests account for different random probabilities across pool eras.
+- Status is refreshed on entering the dashboard, window focus, and every 15 seconds without
+  recalculating. While calculating, status polls every second and a progress bar reports
+  training/validation draw completion and the current stage. Percentages allocate 5% to
+  preparation, 25% to training, 65% to validation and 5% to saving; they are not time estimates.
+  Status is refreshed without
+  recalculating. Results added during a calculation leave its result marked stale.
+- Analysis snapshots and options are held in memory. Restarting the API resets the option to off
+  and requires manual recalculation; stored draw/prediction histories remain intact. No startup
+  backtest runs automatically.
+
+API: `GET /api/analysis/status` reads the selected lottery's status;
+`POST /api/analysis/recalculate` accepts `{"useAllHistory": false}` (or `true`) and requires the
+usual mutation key. All games use `X-Lottery`. Missing/stale analysis blocks generation with
+HTTP 409 Problem Details. See [Analysis.http](backend/LottoPredictor.Api/Analysis.http).
 
 1. `FeatureCalculator` computes per-number features (era-aware frequency rate, counts over the
    last 10/25/50/100 draws, draws since last seen, average gap, gap ratio, recent-vs-long-term

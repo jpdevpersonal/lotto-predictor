@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
+  AnalysisStatusDto,
   BacktestingDto,
   BestOfLinesDto,
   LearningDto,
   PredictionDto,
   PortfolioDto,
   PortfolioLineDto,
-  StatisticsDto,
+  DrawHistoryDto,
   LotteryProfile,
 } from "../types";
 
@@ -62,7 +63,9 @@ export default function Dashboard({
   lottery: LotteryProfile;
   onAddResult: () => void;
 }) {
-  const [stats, setStats] = useState<StatisticsDto | null>(null);
+  const [draws, setDraws] = useState<DrawHistoryDto | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatusDto | null>(null);
+  const [recalculating, setRecalculating] = useState(false);
   const [backtest, setBacktest] = useState<BacktestingDto | null>(null);
   const [prediction, setPrediction] = useState<PredictionDto | null>(null);
   const [history, setHistory] = useState<PredictionDto[]>([]);
@@ -78,15 +81,18 @@ export default function Dashboard({
 
   const load = useCallback(async () => {
     try {
-      const [s, b, p, h, l, f] = await Promise.all([
-        api.statistics(),
-        api.backtesting(),
+      const [status, d, p, h, f] = await Promise.all([
+        api.analysisStatus(),
+        api.drawHistory(),
         api.latestPrediction(),
         api.predictionHistory(),
-        api.learning(),
         api.latestPortfolio(),
       ]);
-      setStats(s);
+      const [b, l] = status.hasAnalysis
+        ? await Promise.all([api.backtesting(), api.learning()])
+        : [null, null];
+      setAnalysisStatus(status);
+      setDraws(d);
       setBacktest(b);
       setPrediction(p);
       setHistory(h ?? []);
@@ -101,6 +107,48 @@ export default function Dashboard({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let active = true;
+    let pending = false;
+    const refreshStatus = () => {
+      if (pending) return;
+      pending = true;
+      void api.analysisStatus().then((status) => {
+        if (active) setAnalysisStatus(status);
+      }).catch((e: unknown) => {
+        if (active) setError(e instanceof Error ? e.message : "Failed to refresh analysis status");
+      }).finally(() => { pending = false; });
+    };
+    window.addEventListener("focus", refreshStatus);
+    const timer = window.setInterval(refreshStatus,
+      recalculating || analysisStatus?.isCalculating ? 1000 : 15000);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refreshStatus);
+      window.clearInterval(timer);
+    };
+  }, [recalculating, analysisStatus?.isCalculating]);
+
+  const recalculate = async (useAllHistory: boolean) => {
+    setRecalculating(true);
+    setAnalysisStatus((current) => current && ({
+      ...current, useAllHistory, needsRecalculation: true, isCalculating: true,
+      progressPercent: 0, progressStage: "Starting recalculation",
+    }));
+    try {
+      await api.recalculate(useAllHistory);
+      await load();
+      setBestOf(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Recalculation failed");
+      setAnalysisStatus((current) => current && ({
+        ...current, needsRecalculation: true, isCalculating: false,
+      }));
+    } finally {
+      setRecalculating(false);
+    }
+  };
 
   const generate = async () => {
     setGenerating(true);
@@ -145,22 +193,70 @@ export default function Dashboard({
     }
   };
 
-  if (!stats) return <p className="loading-state">{error || "Loading…"}</p>;
+  if (!draws || !analysisStatus)
+    return <p className="loading-state">{error || "Loading…"}</p>;
+  const latestDraw = draws.items[0];
+  const latestRounds = draws.items.filter((draw) => draw.date === latestDraw?.date)
+    .sort((a, b) => a.sequence - b.sequence);
+  const busy = recalculating || analysisStatus.isCalculating;
+  const predictionBlocked = busy || analysisStatus.needsRecalculation;
 
   return (
     <div>
       {error && <p className="error">{error}</p>}
 
+      <section aria-label="Manual analysis controls">
+        <div className="actions">
+          <button
+            className={`recalculate ${analysisStatus.needsRecalculation || busy ? "needs-recalculation" : "up-to-date"}`}
+            disabled={busy || !analysisStatus.canRecalculate}
+            onClick={() => void recalculate(analysisStatus.useAllHistory)}
+          >
+            {busy ? "Recalculating…" : analysisStatus.needsRecalculation
+              ? "Recalculate — needed" : "Recalculate — up to date"}
+          </button>
+          <label className="prediction-option">
+            <input
+              type="checkbox"
+              checked={analysisStatus.useAllHistory}
+              disabled={busy || !analysisStatus.canRecalculate}
+              onChange={(event) => void recalculate(event.target.checked)}
+            />
+            Use all available history for training/backtesting
+          </label>
+        </div>
+        {busy && (
+          <div className="recalculation-progress">
+            <label htmlFor="recalculation-progress">
+              {analysisStatus.progressStage} — {analysisStatus.progressPercent}%
+            </label>
+            <progress
+              id="recalculation-progress"
+              max={100}
+              value={analysisStatus.progressPercent}
+              aria-label="Recalculation progress"
+            />
+          </div>
+        )}
+        <p className="muted" role="status">
+          {!analysisStatus.canRecalculate
+            ? "More historical draws are needed before analysis is available."
+            : analysisStatus.needsRecalculation
+              ? `Recalculation required. ${analysisStatus.drawCount} draws available; ${analysisStatus.analyzedDrawCount} in the last analysis. Previous analysis remains visible; new predictions are blocked.`
+              : `Analysis is current for ${analysisStatus.analyzedDrawCount} draws.`}
+          {" "}The option defaults off (up to 1,000 evaluation draws). On uses all
+          history after warmup and may take considerably longer. Features always use full history.
+        </p>
+      </section>
+
       <section>
         <div className="hero">
           <div className="hero-stats">
             <div className="stat">
-              <div className="stat-value">{stats.drawCount}</div>
+              <div className="stat-value">{draws.total}</div>
               <div className="stat-label">Historical draws</div>
               <div className="stat-sub">
-                {lottery.name} · numbers 1–{stats.poolSize}
-                {stats.poolChangeDrawNumber != null &&
-                  `, enlarged from 1–49 at draw ${stats.poolChangeDrawNumber}`}
+                {lottery.name} · numbers 1–{lottery.mainPoolSize}
               </div>
             </div>
           </div>
@@ -168,16 +264,16 @@ export default function Dashboard({
 
         <p className="label">
           Latest result
-          {stats.latestDraw && (
+          {latestDraw && (
             <>
               {" "}
-              <strong>on {stats.latestDraw.date}</strong>
+              <strong>on {latestDraw.date}</strong>
             </>
           )}
         </p>
-        {stats.latestRounds.length > 0 ? (
+        {latestRounds.length > 0 ? (
           <div className="latest-rounds">
-            {stats.latestRounds.map((round, index) => (
+            {latestRounds.map((round, index) => (
               <div className="latest-round" key={round.id}>
                 <span className="round-label">Round {index + 1}</span>
                 <Balls numbers={round.numbers} />
@@ -250,13 +346,13 @@ export default function Dashboard({
               }
             />
           </label>
-          <button onClick={generate} disabled={generating}>
+          <button onClick={generate} disabled={generating || predictionBlocked}>
             {generating ? "Generating…" : "Generate Prediction"}
           </button>
           <button
             className="secondary"
             onClick={generatePortfolio}
-            disabled={portfolioLoading}
+            disabled={portfolioLoading || predictionBlocked}
           >
             {portfolioLoading
               ? "Generating…"
@@ -314,7 +410,7 @@ export default function Dashboard({
                 </p>
               )}
             </div>
-            <button onClick={loadBestOf} disabled={bestLoading}>
+            <button onClick={loadBestOf} disabled={bestLoading || predictionBlocked}>
               {bestLoading ? "Computing…" : "Show Consensus"}
             </button>
           </div>

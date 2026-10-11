@@ -91,6 +91,27 @@ public static class StatFunctions
         return result;
     }
 
+    /// <summary>Exact upper tail for independent hit events whose probabilities vary by era.</summary>
+    public static double PoissonBinomialUpperTail(IReadOnlyList<double> probabilities, int hits)
+    {
+        if (probabilities.Any(p => !double.IsFinite(p) || p < 0 || p > 1))
+            throw new ArgumentOutOfRangeException(nameof(probabilities));
+        if (hits <= 0) return 1;
+        if (hits > probabilities.Count) return 0;
+        var distribution = new double[hits + 1];
+        distribution[0] = 1;
+        int processed = 0;
+        foreach (double p in probabilities)
+        {
+            for (int k = Math.Min(++processed, hits); k >= 1; k--)
+                distribution[k] = k == hits
+                    ? distribution[k] + distribution[k - 1] * p
+                    : distribution[k] * (1 - p) + distribution[k - 1] * p;
+            distribution[0] *= 1 - p;
+        }
+        return Math.Clamp(distribution[hits], 0, 1);
+    }
+
     private static double Log1p(double x)
     {
         if (Math.Abs(x) > 1e-4)

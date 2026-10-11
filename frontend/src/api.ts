@@ -1,4 +1,5 @@
 import type {
+  AnalysisStatusDto,
   BacktestingDto,
   BestOfLinesDto,
   DrawDto,
@@ -54,6 +55,18 @@ function defaultErrorMessage(status: number, method: string) {
 }
 
 export const api = {
+  analysisStatus: async () => {
+    const status = await request<AnalysisStatusDto | null>("/api/analysis/status");
+    if (status === null)
+      throw new Error("Analysis controls require the updated backend. Restart the API.");
+    return status;
+  },
+  recalculate: (useAllHistory = false) =>
+    request<AnalysisStatusDto>("/api/analysis/recalculate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ useAllHistory }),
+    }),
   statistics: () => request<StatisticsDto>("/api/statistics"),
   backtesting: () => request<BacktestingDto>("/api/backtesting"),
   latestDraw: () => request<DrawDto | null>("/api/draws/latest"),

@@ -60,7 +60,9 @@ public static class Backtester
         int warmup = 150,
         int randomSeed = 20260831,
         int? configuredPoolSize = null,
-        DateOnly? poolExpansionDate = null)
+        DateOnly? poolExpansionDate = null,
+        Action<int, int>? onProgress = null,
+        CancellationToken ct = default)
     {
         if (draws.Count <= warmup + 2)
             throw new InvalidOperationException($"Need more than {warmup + 2} draws to backtest.");
@@ -86,6 +88,7 @@ public static class Backtester
 
         for (int i = start; i < draws.Count; i++)
         {
+            ct.ThrowIfCancellationRequested();
             var prefix = new PrefixView(draws, i); // draws[0..i) only — the target draw is invisible
             var actual = draws[i].Numbers;
             var fs = FeatureCalculator.Compute(
@@ -128,6 +131,7 @@ public static class Backtester
             expectedMatches.Add((double)(pickCount * pickCount) / pool);
             expectedThreePlus.Add(ThreePlusProbability(pool, pickCount));
             randomMatches.Add(CountMatches(RandomSet(rng, pool, pickCount), actual));
+            onProgress?.Invoke(i - start + 1, evaluated);
         }
 
         // Select a strategy using only the earlier part of the walk-forward window. The later
@@ -163,8 +167,12 @@ public static class Backtester
 
         // The strategy was frozen before the holdout, so a single exact binomial test is valid.
         // A normal approximation is unsafe here because three-plus hits are very rare.
-        double pValue = StatFunctions.BinomialUpperTail(
-            best.Evaluated, best.ThreePlusHits, randomThreePlusProbability);
+        var holdoutProbabilities = expectedThreePlus.Skip(selectionEvaluated).ToArray();
+        bool singleEra = holdoutProbabilities.Distinct().Count() == 1;
+        double pValue = singleEra
+            ? StatFunctions.BinomialUpperTail(best.Evaluated, best.ThreePlusHits, randomThreePlusProbability)
+            : StatFunctions.PoissonBinomialUpperTail(holdoutProbabilities, best.ThreePlusHits);
+        string hitTest = singleEra ? "binomial" : "Poisson-binomial";
 
         var bestSteps = scoreSteps[best.Strategy.Name];
         var (temperature, logScore, informationZ) = InformationTest(
@@ -182,11 +190,11 @@ public static class Backtester
             ? $"No measurable advantage over random selection for the three-plus objective. Best strategy '{best.Strategy.Name}' hit " +
               $"3+ main numbers {best.ThreePlusHits} time(s) in {best.Evaluated} held-out draws " +
               $"({100.0 * best.ThreePlusRate:0.###}% vs {100.0 * randomThreePlusProbability:0.###}% exact random probability per line; " +
-              $"exact one-sided binomial p={pValue:0.####}). Average matches remain secondary: " +
+              $"exact one-sided {hitTest} p={pValue:0.####}). Average matches remain secondary: " +
               $"{best.AvgMatches:0.000} vs {randomExpected:0.000} expected."
             : $"Strategy '{best.Strategy.Name}' hit 3+ main numbers {best.ThreePlusHits} time(s) in {best.Evaluated} " +
               $"held-out draws ({100.0 * best.ThreePlusRate:0.###}% vs {100.0 * randomThreePlusProbability:0.###}% exact random probability per line; " +
-              $"exact one-sided binomial p={pValue:0.####}). This is only a sparse historical signal; " +
+              $"exact one-sided {hitTest} p={pValue:0.####}). This is only a sparse historical signal; " +
               "future prospective tracking is still required before treating it as an edge.";
         verdict += " " + information;
         verdict += $" Selection used {selectionEvaluated} earlier draws; the holdout used {holdoutEvaluated}. " +

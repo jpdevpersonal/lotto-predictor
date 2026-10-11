@@ -20,12 +20,15 @@ builder.Services.AddScoped<IStatisticsService, StatisticsService>();
 builder.Services.AddScoped<ILearningService, LearningService>();
 
 builder.Services.AddControllers();
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<LottoPredictor.Api.Middleware.AnalysisExceptionHandler>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
     p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
 
 app.UseCors();
+app.UseExceptionHandler();
 app.UseMutationApiKey();
 app.MapControllers();
 
@@ -170,29 +173,6 @@ using (var scope = app.Services.CreateScope())
         }
     }
 }
-
-// Warm the analysis cache after Kestrel starts so readiness is not blocked by the backtest.
-app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
-{
-    try
-    {
-        using var scope = app.Services.CreateScope();
-        var analysis = scope.ServiceProvider.GetRequiredService<IAnalysisService>();
-        var snapshot = await analysis.GetSnapshotAsync(app.Lifetime.ApplicationStopping);
-        app.Logger.LogInformation(
-            "Analysis ready: {Draws} draws, pool 1-{Pool}, learning generation {Gen}, active strategy '{Strategy}'.",
-            snapshot.Draws.Count, snapshot.PoolSize, snapshot.LearningGeneration, snapshot.ActiveStrategy.Name);
-        app.Logger.LogInformation("Backtest verdict: {Verdict}", snapshot.Backtest.Verdict);
-    }
-    catch (InvalidOperationException ex)
-    {
-        app.Logger.LogWarning("Analysis not available yet: {Message}", ex.Message);
-    }
-    catch (OperationCanceledException) when (app.Lifetime.ApplicationStopping.IsCancellationRequested)
-    {
-        app.Logger.LogInformation("Analysis warm-up canceled because the application is stopping.");
-    }
-}));
 
 app.Run();
 

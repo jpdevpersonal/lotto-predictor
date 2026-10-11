@@ -6,6 +6,21 @@ namespace LottoPredictor.Tests;
 public class BacktesterTests
 {
     [Fact]
+    public void Progress_reports_each_completed_draw_and_cancellation_is_honoured()
+    {
+        var updates = new List<(int Completed, int Total)>();
+        var history = RandomHistory(160, 59);
+        Backtester.Run(history, [ScoringStrategy.Candidates[0]], evalWindow: 4, warmup: 150,
+            onProgress: (completed, total) => updates.Add((completed, total)));
+        Assert.Equal(new[] { (1, 4), (2, 4), (3, 4), (4, 4) }, updates);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            Backtester.Run(history, [ScoringStrategy.Candidates[0]], evalWindow: 4, warmup: 150,
+                ct: cancellation.Token));
+    }
+
+    [Fact]
     public void Match_distribution_sums_to_evaluated_count()
     {
         var draws = RandomHistory(300, 59);

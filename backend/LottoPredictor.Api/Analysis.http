@@ -1,0 +1,31 @@
+@baseUrl = http://localhost:5080
+@lottery = uk-lotto
+@mutationApiKey = replace-with-your-local-mutation-key
+
+### Cheap status; also supports euromillions and set-for-life
+GET {{baseUrl}}/api/analysis/status
+X-Lottery: {{lottery}}
+
+### Recalculate with the default evaluation window
+POST {{baseUrl}}/api/analysis/recalculate
+X-Lottery: {{lottery}}
+X-Api-Key: {{mutationApiKey}}
+Content-Type: application/json
+
+{"useAllHistory": false}
+
+### Recalculate with every available draw after warmup
+POST {{baseUrl}}/api/analysis/recalculate
+X-Lottery: {{lottery}}
+X-Api-Key: {{mutationApiKey}}
+Content-Type: application/json
+
+{"useAllHistory": true}
+
+### Before recalculation, or after a result changes: expect 409, never an automatic backtest
+POST {{baseUrl}}/api/predictions/generate
+X-Lottery: {{lottery}}
+X-Api-Key: {{mutationApiKey}}
+Content-Type: application/json
+
+{}

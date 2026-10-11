@@ -1,5 +1,20 @@
 namespace LottoPredictor.Core.Dtos;
 
+/// <summary>Manual analysis state for the selected lottery; reading it never runs a backtest.</summary>
+public sealed record AnalysisStatusDto(
+    bool HasAnalysis,
+    bool NeedsRecalculation,
+    bool IsCalculating,
+    bool UseAllHistory,
+    int DrawCount,
+    int AnalyzedDrawCount,
+    bool CanRecalculate,
+    int ProgressPercent = 0,
+    string ProgressStage = "Not started");
+
+/// <summary>Recalculates using the usual evaluation window or every eligible historical draw.</summary>
+public sealed record RecalculateAnalysisRequest(bool UseAllHistory = false);
+
 public record DrawDto(
     int Id,
     int Sequence,

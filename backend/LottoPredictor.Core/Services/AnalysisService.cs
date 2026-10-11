@@ -1,5 +1,6 @@
 using LottoPredictor.Core.Analysis;
 using LottoPredictor.Core.Data;
+using LottoPredictor.Core.Dtos;
 using LottoPredictor.Core.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Collections.Concurrent;
@@ -17,14 +18,18 @@ public sealed class AnalysisSnapshot
     public required ScoringStrategy ActiveStrategy { get; init; }
     public required IReadOnlyList<ScoringStrategy> AllStrategies { get; init; }
     public required int LearningGeneration { get; init; }
+    public bool UseAllHistory { get; init; }
     public IReadOnlyDictionary<string, double> HedgeWeights => Backtest.HedgeWeights;
     public int PoolSize => Features.Pool.PoolSize;
 }
 
 public interface IAnalysisService
 {
-    /// <summary>Returns the cached analysis snapshot, rebuilding it if a draw has been added.</summary>
-    Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default);
+    /// <summary>Reads the last analysis without recalculating. Generation requires current data.</summary>
+    Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default, bool requireCurrent = false);
+    AnalysisSnapshot? GetCachedSnapshot();
+    Task<AnalysisStatusDto> GetStatusAsync(CancellationToken ct = default);
+    Task<AnalysisSnapshot> RecalculateAsync(bool useAllHistory = false, CancellationToken ct = default);
     void Invalidate();
 }
 
@@ -35,8 +40,8 @@ public class AnalysisOptions
 }
 
 /// <summary>Owns the derived state (features + walk-forward backtest + active strategy choice).
-/// Everything is recomputed automatically whenever a draw is added; nothing needs manual
-/// retraining. The active strategy is selected by the earlier part of the walk-forward window
+/// Recalculation is explicit; draw changes mark the last snapshot stale without deleting it.
+/// The active strategy is selected by the earlier part of the walk-forward window
 /// and its displayed performance comes only from the later chronological holdout.</summary>
 public class AnalysisService : IAnalysisService
 {
@@ -44,6 +49,13 @@ public class AnalysisService : IAnalysisService
     {
         public SemaphoreSlim Lock { get; } = new(1, 1);
         public AnalysisSnapshot? Snapshot { get; set; }
+        public object Sync { get; } = new();
+        public long Revision { get; set; }
+        public long AnalyzedRevision { get; set; }
+        public bool UseAllHistory { get; set; }
+        public bool IsCalculating { get; set; }
+        public int ProgressPercent { get; set; }
+        public string ProgressStage { get; set; } = "Not started";
     }
 
     private readonly IDbContextFactory<LottoDbContext> contextFactory;
@@ -61,24 +73,76 @@ public class AnalysisService : IAnalysisService
         this.lotterySelection = lotterySelection ?? new DefaultLotterySelection();
     }
 
-    public async Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default)
+    public AnalysisSnapshot? GetCachedSnapshot()
+    {
+        var state = profileStates.GetOrAdd(lotterySelection.Current.Key, _ => new ProfileAnalysisState());
+        lock (state.Sync) return state.Snapshot;
+    }
+
+    public async Task<AnalysisStatusDto> GetStatusAsync(CancellationToken ct = default)
+    {
+        var state = profileStates.GetOrAdd(lotterySelection.Current.Key, _ => new ProfileAnalysisState());
+        await using var db = await contextFactory.CreateDbContextAsync(ct);
+        int drawCount = await db.Draws.CountAsync(ct);
+        lock (state.Sync)
+            return new AnalysisStatusDto(
+                state.Snapshot is not null,
+                state.Snapshot is null || state.Revision != state.AnalyzedRevision ||
+                    state.Snapshot.Draws.Count != drawCount,
+                state.IsCalculating, state.UseAllHistory, drawCount,
+                state.Snapshot?.Draws.Count ?? 0, drawCount > options.BacktestWarmup + 2,
+                state.ProgressPercent, state.ProgressStage);
+    }
+
+    public async Task<AnalysisSnapshot> GetSnapshotAsync(
+        CancellationToken ct = default, bool requireCurrent = false)
+    {
+        if (requireCurrent)
+        {
+            var status = await GetStatusAsync(ct);
+            if (status.NeedsRecalculation || status.IsCalculating)
+                throw new AnalysisRequiredException("Recalculate this lottery before generating new predictions.");
+        }
+        return GetCachedSnapshot() ??
+            throw new AnalysisRequiredException("No analysis is available. Press Recalculate for this lottery.");
+    }
+
+    public async Task<AnalysisSnapshot> RecalculateAsync(
+        bool useAllHistory = false, CancellationToken ct = default)
     {
         var lottery = lotterySelection.Current;
         var state = profileStates.GetOrAdd(lottery.Key, _ => new ProfileAnalysisState());
-        var existing = state.Snapshot;
-        if (existing != null) return existing;
-
-        await state.Lock.WaitAsync(ct);
+        if (!await state.Lock.WaitAsync(0, ct))
+            throw new AnalysisRequiredException("This lottery is already being recalculated.");
+        long revision;
+        lock (state.Sync)
+        {
+            if (state.UseAllHistory != useAllHistory) state.Revision++;
+            state.UseAllHistory = useAllHistory;
+            state.IsCalculating = true;
+            state.ProgressPercent = 0;
+            state.ProgressStage = "Loading history and computing features";
+            revision = state.Revision;
+        }
+        void ReportProgress(int percent, string stage)
+        {
+            lock (state.Sync)
+            {
+                state.ProgressPercent = percent;
+                state.ProgressStage = stage;
+            }
+        }
         try
         {
-            if (state.Snapshot != null) return state.Snapshot;
-
             await using var db = await contextFactory.CreateDbContextAsync(ct);
             var draws = await db.Draws.AsNoTracking()
                 .OrderBy(d => d.Sequence)
                 .ToListAsync(ct);
             if (draws.Count == 0)
-                throw new InvalidOperationException("No draws in database; import the CSV first.");
+                throw new AnalysisRequiredException("No draws are available. Import or add results first.");
+            if (draws.Count <= options.BacktestWarmup + 2)
+                throw new AnalysisRequiredException(
+                    $"More than {options.BacktestWarmup + 2} draws are needed to recalculate.");
 
             var events = draws
                 .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(),
@@ -98,19 +162,24 @@ public class AnalysisService : IAnalysisService
                 : null;
 
             int drawCount = events.Count;
+            int evalWindow = useAllHistory ? drawCount : options.BacktestEvalWindow;
             int generation = 1;
             int selectionCutoff = Backtester.SelectionCutoff(
-                drawCount, options.BacktestEvalWindow, options.BacktestWarmup);
+                drawCount, evalWindow, options.BacktestWarmup);
             IReadOnlyList<ScoringStrategy> seeds = ScoringStrategy.Candidates;
+            ReportProgress(5, "Training strategies");
             // Replay training from clean seeds. Saved winners may have seen today's historical
             // holdout in an earlier rebuild, so they must never seed this validation.
             if (selectionCutoff > options.BacktestWarmup + 2)
             {
                 var training = Backtester.Run(
                     Backtester.Prefix(events, selectionCutoff), seeds,
-                    options.BacktestEvalWindow, options.BacktestWarmup,
+                    evalWindow, options.BacktestWarmup,
                     configuredPoolSize: lottery.MainPoolSize,
-                    poolExpansionDate: lottery.MainPoolExpansionDate);
+                    poolExpansionDate: lottery.MainPoolExpansionDate,
+                    onProgress: (completed, total) =>
+                        ReportProgress(5 + completed * 25 / total, "Training strategies"),
+                    ct: ct);
                 seeds = training.Strategies
                     .Where(r => r.Strategy.Name != Backtester.EnsembleName)
                     .OrderByDescending(r => r.ThreePlusRate)
@@ -119,6 +188,7 @@ public class AnalysisService : IAnalysisService
                     .Select(r => r.Strategy).ToList();
             }
             var newCandidates = StrategyOptimizer.GenerateCandidates(seeds, generation);
+            ReportProgress(30, "Validating strategies");
 
             var allStrategies = ScoringStrategy.Candidates
                 .Concat(newCandidates)
@@ -126,13 +196,17 @@ public class AnalysisService : IAnalysisService
                 .ToList();
 
             var backtest = Backtester.Run(
-                events, allStrategies, options.BacktestEvalWindow, options.BacktestWarmup,
+                events, allStrategies, evalWindow, options.BacktestWarmup,
                 configuredPoolSize: lottery.MainPoolSize,
-                poolExpansionDate: lottery.MainPoolExpansionDate);
+                poolExpansionDate: lottery.MainPoolExpansionDate,
+                onProgress: (completed, total) =>
+                    ReportProgress(30 + completed * 65 / total, "Validating strategies"),
+                ct: ct);
 
+            ReportProgress(95, "Saving analysis");
             await PersistLearningAsync(db, backtest, generation, drawCount, ct);
 
-            state.Snapshot = new AnalysisSnapshot
+            var snapshot = new AnalysisSnapshot
             {
                 Draws = events,
                 Features = features,
@@ -145,11 +219,24 @@ public class AnalysisService : IAnalysisService
                 ActiveStrategy = backtest.Best.Strategy,
                 AllStrategies = allStrategies,
                 LearningGeneration = generation,
+                UseAllHistory = useAllHistory,
             };
-            return state.Snapshot;
+            lock (state.Sync)
+            {
+                state.Snapshot = snapshot;
+                state.AnalyzedRevision = revision;
+                state.ProgressPercent = 100;
+                state.ProgressStage = "Complete";
+            }
+            return snapshot;
         }
         finally
         {
+            lock (state.Sync)
+            {
+                state.IsCalculating = false;
+                if (state.ProgressPercent < 100) state.ProgressStage = "Recalculation did not complete";
+            }
             state.Lock.Release();
         }
     }
@@ -230,7 +317,9 @@ public class AnalysisService : IAnalysisService
     public void Invalidate()
     {
         var lottery = lotterySelection.Current;
-        if (profileStates.TryGetValue(lottery.Key, out var state))
-            state.Snapshot = null;
+        var state = profileStates.GetOrAdd(lottery.Key, _ => new ProfileAnalysisState());
+        lock (state.Sync) state.Revision++;
     }
 }
+
+public sealed class AnalysisRequiredException(string message) : InvalidOperationException(message);

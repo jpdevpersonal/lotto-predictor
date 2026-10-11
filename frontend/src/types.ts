@@ -194,6 +194,18 @@ export interface BacktestingDto {
   verdict: string;
 }
 
+export interface AnalysisStatusDto {
+  progressPercent: number;
+  progressStage: string;
+  hasAnalysis: boolean;
+  needsRecalculation: boolean;
+  isCalculating: boolean;
+  useAllHistory: boolean;
+  drawCount: number;
+  analyzedDrawCount: number;
+  canRecalculate: boolean;
+}
+
 export interface StatisticsDto {
   drawCount: number;
   poolSize: number;
