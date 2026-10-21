@@ -126,6 +126,8 @@ export interface PortfolioSimulationDto {
   ciLow: number;
   ciHigh: number;
   randomDistinctProbability: number | null;
+  /** True when every possible draw was counted, so the probability is exact. */
+  exhaustive: boolean;
 }
 
 export interface PortfolioDto {

@@ -34,29 +34,31 @@ public class PortfolioOptimizerTests
     }
 
     [Fact]
-    public void Low_overlap_six_ball_portfolio_reports_estimates_not_exact_union_bound()
+    public void Sixty_line_portfolio_reports_exact_odds_counted_over_every_possible_draw()
     {
         var history = RandomHistory(260, 59, seed: 42);
         var fs = FeatureCalculator.Compute(history, configuredPoolSize: 59);
         var strategy = ScoringStrategy.Candidates[0];
         var portfolio = PortfolioOptimizer.BuildCoveragePortfolio(
             fs, PredictionEngine.ScoreNumbers(fs, strategy), strategy, lineCount: 60);
+        var lines = portfolio.Lines.Select(line => line.Numbers).ToList();
 
         Assert.All(portfolio.Lines, line => Assert.All(line.Numbers, n => Assert.InRange(n, 1, 59)));
-        for (int i = 0; i < portfolio.Lines.Count; i++)
-            for (int j = i + 1; j < portfolio.Lines.Count; j++)
-                Assert.True(portfolio.Lines[i].Numbers.Intersect(portfolio.Lines[j].Numbers).Count() <= 1);
-        Assert.All(portfolio.Lines, line => Assert.InRange(line.MaxOverlapWithEarlier, 0, 1));
-        Assert.False(portfolio.Odds.IsExact);
-        Assert.Equal(1, portfolio.Odds.MaxPairwiseOverlap);
-        Assert.True(portfolio.Odds.ThreePlusProbability < 60 * portfolio.SingleLineThreePlusProbability);
+        Assert.True(portfolio.Odds.IsExact);
+        Assert.True(portfolio.CoverageOptimized.Exhaustive);
+        Assert.Equal(45057474, portfolio.CoverageOptimized.Trials);
+        Assert.Equal(PortfolioOptimizer.ExactThreePlusProbability(lines, 59, 6), portfolio.Odds.ThreePlusProbability, 12);
         Assert.Equal(portfolio.CoverageOptimized.Probability, portfolio.Odds.ThreePlusProbability);
-        Assert.InRange(portfolio.Odds.ThreePlusProbability,
-            portfolio.CoverageOptimized.CiLow, portfolio.CoverageOptimized.CiHigh);
+        Assert.True(portfolio.Odds.ThreePlusProbability < 60 * portfolio.SingleLineThreePlusProbability);
+        Assert.True(portfolio.Odds.ThreePlusProbability > portfolio.RandomDistinct.Probability);
+        Assert.True(portfolio.Odds.MaxPairwiseOverlap <= 1);
+        for (int i = 0; i < portfolio.Lines.Count; i++)
+            Assert.Equal(i == 0 ? 0 : lines.Take(i).Max(earlier => earlier.Intersect(lines[i]).Count()),
+                portfolio.Lines[i].MaxOverlapWithEarlier);
     }
 
     [Fact]
-    public void Large_portfolio_reports_a_valid_estimate_when_pairwise_bounds_are_uninformative()
+    public void Large_portfolio_reports_exact_odds_above_random_distinct_lines()
     {
         var history = RandomHistory(260, 59, seed: 99);
         var fs = FeatureCalculator.Compute(history, configuredPoolSize: 59);
@@ -65,10 +67,67 @@ public class PortfolioOptimizerTests
             fs, PredictionEngine.ScoreNumbers(fs, strategy), strategy, lineCount: 200);
 
         Assert.Equal(200, portfolio.Lines.Select(line => string.Join(',', line.Numbers)).Distinct().Count());
-        Assert.True(portfolio.Odds.MaxPairwiseOverlap <= 2);
-        Assert.False(portfolio.Odds.IsExact);
+        Assert.True(portfolio.Odds.IsExact);
         Assert.InRange(portfolio.Odds.ThreePlusProbability, portfolio.SingleLineThreePlusProbability, 1);
+        Assert.True(portfolio.Odds.ThreePlusProbability > portfolio.RandomDistinct.Probability);
         Assert.Equal(portfolio.CoverageOptimized.Probability, portfolio.Odds.ThreePlusProbability);
+    }
+
+    [Fact]
+    public void Up_to_nine_six_ball_lines_are_pairwise_disjoint()
+    {
+        var history = RandomHistory(260, 59, seed: 7);
+        var fs = FeatureCalculator.Compute(history, configuredPoolSize: 59);
+        var strategy = ScoringStrategy.Candidates[0];
+        var portfolio = PortfolioOptimizer.BuildCoveragePortfolio(
+            fs, PredictionEngine.ScoreNumbers(fs, strategy), strategy, lineCount: 9);
+
+        Assert.Equal(54, portfolio.Lines.SelectMany(line => line.Numbers).Distinct().Count());
+        Assert.Equal(0, portfolio.Odds.MaxPairwiseOverlap);
+    }
+
+    [Fact]
+    public void Refined_portfolio_respects_excluded_numbers_and_beats_random_lines()
+    {
+        var history = RandomHistory(260, 59, seed: 11);
+        var fs = FeatureCalculator.Compute(history, configuredPoolSize: 59);
+        var strategy = ScoringStrategy.Candidates[0];
+        var excluded = new HashSet<int> { 3, 14, 15, 26, 35, 58 };
+        var portfolio = PortfolioOptimizer.BuildCoveragePortfolio(
+            fs, PredictionEngine.ScoreNumbers(fs, strategy), strategy, lineCount: 20, excludedNumbers: excluded);
+
+        Assert.All(portfolio.Lines, line => Assert.DoesNotContain(line.Numbers, excluded.Contains));
+        Assert.All(portfolio.Lines, line => Assert.Equal(line.Numbers, line.Numbers.Distinct().OrderBy(n => n)));
+        Assert.Equal(20, portfolio.Lines.Select(line => string.Join(',', line.Numbers)).Distinct().Count());
+        Assert.True(portfolio.Odds.ThreePlusProbability > portfolio.RandomDistinct.Probability);
+    }
+
+    [Theory]
+    [InlineData(14, 6, 5, 1)]
+    [InlineData(14, 6, 70, 2)]
+    [InlineData(12, 5, 9, 3)]
+    [InlineData(16, 5, 130, 4)]
+    public void Exact_three_plus_count_matches_brute_force_enumeration(int pool, int pick, int lineCount, int seed)
+    {
+        var rng = new Random(seed);
+        var lines = Enumerable.Range(0, lineCount).Select(_ =>
+        {
+            var set = new HashSet<int>();
+            while (set.Count < pick) set.Add(rng.Next(1, pool + 1));
+            return set.OrderBy(n => n).ToArray();
+        }).ToList();
+
+        int hits = 0, total = 0;
+        foreach (var draw in AllDraws(pool, pick))
+        {
+            total++;
+            if (lines.Any(line => line.Intersect(draw).Count() >= 3)) hits++;
+        }
+
+        var (exactHits, exactTotal) = PortfolioOptimizer.CountThreePlusDraws(lines, pool, pick);
+        Assert.Equal(total, exactTotal);
+        Assert.Equal(hits, exactHits);
+        Assert.Equal((double)hits / total, PortfolioOptimizer.ComputeOdds(lines, pool, pick).ThreePlusProbability, 12);
     }
 
     [Fact]

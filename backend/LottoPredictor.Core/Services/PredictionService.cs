@@ -154,10 +154,11 @@ public class PredictionService(
             .ToList();
         var simulation = new PortfolioSimulationDto(
             portfolio.CoverageOptimized.Trials,
-            Math.Round(portfolio.CoverageOptimized.Probability, 8),
-            Math.Round(portfolio.CoverageOptimized.CiLow, 8),
-            Math.Round(portfolio.CoverageOptimized.CiHigh, 8),
-            Math.Round(portfolio.RandomDistinct.Probability, 8));
+            Math.Round(portfolio.CoverageOptimized.Probability, 10),
+            Math.Round(portfolio.CoverageOptimized.CiLow, 10),
+            Math.Round(portfolio.CoverageOptimized.CiHigh, 10),
+            Math.Round(portfolio.RandomDistinct.Probability, 10),
+            portfolio.CoverageOptimized.Exhaustive);
         return ToPortfolioDto(
             portfolioId, createdUtc, snapshot.ActiveStrategy.Name, snapshot.ActiveStrategy.Version,
             lastDraw.DrawNumber, snapshot.Lottery.RoundCount, portfolio.Objective, portfolio.Odds,
@@ -184,7 +185,7 @@ public class PredictionService(
         var lottery = analysis.GetCachedSnapshot()?.Lottery ??
             (lotterySelection ?? new DefaultLotterySelection()).Current;
         var sets = rows.Select(r => r.Numbers()).ToList();
-        var simulation = PortfolioOptimizer.Simulate(
+        var simulation = PortfolioOptimizer.Evaluate(
             sets, lottery.MainPoolSize, lottery.MainNumberCount);
         var odds = PortfolioOptimizer.ComputeOdds(
             sets, lottery.MainPoolSize, lottery.MainNumberCount, simulation);
@@ -200,8 +201,9 @@ public class PredictionService(
             rows[0].CutoffDrawNumber, lottery.RoundCount,
             $"P(at least one of K={rows.Count} fixed lines matches at least three main numbers in a round)",
             odds, new PortfolioSimulationDto(
-                simulation.Trials, Math.Round(simulation.Probability, 8),
-                Math.Round(simulation.CiLow, 8), Math.Round(simulation.CiHigh, 8), null), lines);
+                simulation.Trials, Math.Round(simulation.Probability, 10),
+                Math.Round(simulation.CiLow, 10), Math.Round(simulation.CiHigh, 10), null,
+                simulation.Exhaustive), lines);
     }
 
     private static PortfolioDto ToPortfolioDto(

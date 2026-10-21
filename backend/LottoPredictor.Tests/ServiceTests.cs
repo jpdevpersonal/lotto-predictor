@@ -473,8 +473,9 @@ public sealed class ServiceTests : IDisposable
         Assert.NotNull(portfolio.PortfolioId);
         Assert.Equal(8, portfolio.LineCount);
         Assert.Equal(2, portfolio.RoundCount);
-        Assert.False(portfolio.ProbabilityIsExact);
+        Assert.True(portfolio.ProbabilityIsExact);
         Assert.NotNull(portfolio.Simulation);
+        Assert.True(portfolio.Simulation.Exhaustive);
         Assert.Equal(portfolio.Simulation.Probability, portfolio.PortfolioThreePlusProbability, 9);
         Assert.Equal(1 - Math.Pow(1 - portfolio.PortfolioThreePlusProbability, 2), portfolio.AnyRoundThreePlusProbability, 9);
         Assert.All(portfolio.Lines, line => Assert.NotNull(line.Prediction));

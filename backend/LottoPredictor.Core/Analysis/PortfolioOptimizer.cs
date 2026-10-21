@@ -7,17 +7,22 @@ public sealed record PortfolioLine(
     /// <summary>Largest number of balls this line shares with any earlier line.</summary>
     int MaxOverlapWithEarlier);
 
+/// <summary>Hit count over <see cref="Trials"/> draws. Portfolio results enumerate every possible
+/// draw, so the interval collapses to the exact probability; <see cref="PortfolioOptimizer.Simulate"/>
+/// still returns Monte Carlo estimates with a Wilson interval.</summary>
 public sealed record PortfolioSimulation(
     int Trials,
-    int Hits,
+    long Hits,
     double Probability,
     double CiLow,
-    double CiHigh);
+    double CiHigh,
+    /// <summary>True when every possible draw was enumerated, so the probability is exact.</summary>
+    bool Exhaustive = false);
 
-/// <summary>Analytic odds of a fixed portfolio for one uniform draw.</summary>
+/// <summary>Odds of a fixed portfolio for one uniform draw.</summary>
 public sealed record PortfolioOdds(
     double SingleLineThreePlusProbability,
-    /// <summary>P(at least one line matches 3+). Exact when <see cref="IsExact"/>; otherwise the
+    /// <summary>P(at least one line matches 3+). Exact when <see cref="IsExact"/>; otherwise
     /// a reproducible Monte Carlo estimate.</summary>
     double ThreePlusProbability,
     bool IsExact,
@@ -32,7 +37,9 @@ public sealed record PortfolioResult(
     string Objective);
 
 /// <summary>Builds K lines that maximise P(at least one line matches 3+ main numbers) for a
-/// uniform draw using a greedy pairwise intersection-loss heuristic. Even disjoint lines can
+/// uniform draw. A greedy pairwise intersection-loss heuristic builds a first portfolio, then a
+/// seeded local search swaps single balls to cut the pairwise loss further; the version with the
+/// higher exact probability (counted over every possible draw) is kept. Even disjoint lines can
 /// both match 3+ in a six-ball draw, so K·p is generally only an upper bound, not achievable odds.
 /// When the pool can no longer supply low-overlap lines the constraint relaxes one ball at a time.
 /// Model scores only break ties between equally valid lines; they cannot raise the odds.</summary>
@@ -40,6 +47,10 @@ public static class PortfolioOptimizer
 {
     private const int ConstructionsPerLine = 400;
     private const int SimulationTrials = 100000;
+    private const int RefinementStepsPerLine = 4000;
+    private const int RefinementBaseSteps = 20000;
+    /// <summary>Exact enumeration packs balls into 64-bit masks.</summary>
+    private const int MaxExactPoolSize = 63;
 
     public static PortfolioResult BuildCoveragePortfolio(
         FeatureSet fs,
@@ -106,30 +117,57 @@ public static class PortfolioOptimizer
                 bestScore = LineScore(fs, best, scores, strategy);
             }
 
-            int overlap = selectedSets.Count == 0 ? 0 : selectedSets.Max(s => s.Intersect(best).Count());
             packing.Add(best);
             selectedSets.Add(best);
             selectedKeys.Add(LineKey(best));
-            selected.Add(new PortfolioLine(selected.Count + 1, best, Math.Round(bestScore, 4), overlap));
+            selected.Add(new PortfolioLine(selected.Count + 1, best, Math.Round(bestScore, 4), 0));
         }
+
+        var finalSets = selectedSets;
+        var coverage = Evaluate(finalSets, poolSize, pickCount, randomSeed);
+        var refined = Refine(selectedSets, legalNumbers, pickCount, pairTerm,
+            new Random(randomSeed + 4057 + lineCount));
+        if (refined is not null)
+        {
+            var refinedCoverage = Evaluate(refined, poolSize, pickCount, randomSeed);
+            if (refinedCoverage.Hits > coverage.Hits)
+            {
+                finalSets = refined;
+                coverage = refinedCoverage;
+            }
+        }
+
+        var lines = finalSets.Select((line, index) => new PortfolioLine(
+            index + 1,
+            line,
+            ReferenceEquals(finalSets, selectedSets)
+                ? selected[index].Score
+                : Math.Round(LineScore(fs, line, scores, strategy), 4),
+            index == 0 ? 0 : finalSets.Take(index).Max(earlier => earlier.Intersect(line).Count())))
+            .ToList();
 
         var randomPortfolio = DistinctRandomLines(
             new Random(randomSeed + 991), legalNumbers, pickCount, lineCount);
         double single = Backtester.ThreePlusProbability(poolSize, pickCount);
-        var coverage = Simulate(selectedSets, poolSize, pickCount, randomSeed);
         return new PortfolioResult(
-            selected,
-            ComputeOdds(selectedSets, poolSize, pickCount, coverage),
+            lines,
+            OddsCore(finalSets, poolSize, pickCount, coverage),
             coverage,
-            Simulate(randomPortfolio, poolSize, pickCount, randomSeed + 2003),
+            Evaluate(randomPortfolio, poolSize, pickCount, randomSeed + 2003),
             single,
             $"P(at least one of K={lineCount} fixed lines matches at least three main numbers in a round)");
     }
 
-    /// <summary>Exact for one/two lines or mutually exclusive hit events; otherwise estimated
-    /// by simulation because truncating inclusion–exclusion can give useless bounds.</summary>
+    /// <summary>Exact whenever the pool fits a 64-bit mask (every supported game), by counting
+    /// every possible draw (or reusing an exhaustive <paramref name="simulation"/>). Larger pools
+    /// fall back to the closed form for one/two lines or mutually exclusive hit events, and
+    /// otherwise to <paramref name="simulation"/>.</summary>
     public static PortfolioOdds ComputeOdds(
-        IReadOnlyList<int[]> lines, int poolSize, int pickCount, PortfolioSimulation? simulation = null)
+        IReadOnlyList<int[]> lines, int poolSize, int pickCount, PortfolioSimulation? simulation = null) =>
+        OddsCore(lines, poolSize, pickCount, simulation);
+
+    private static PortfolioOdds OddsCore(
+        IReadOnlyList<int[]> lines, int poolSize, int pickCount, PortfolioSimulation? simulation)
     {
         double single = Backtester.ThreePlusProbability(poolSize, pickCount);
         var pairTerm = new double?[pickCount + 1];
@@ -144,10 +182,183 @@ public static class PortfolioOptimizer
                 total -= pairTerm[shared]!.Value;
             }
 
+        if (poolSize <= MaxExactPoolSize)
+        {
+            double exactProbability = simulation is { Exhaustive: true }
+                ? simulation.Probability
+                : ExactThreePlusProbability(lines, poolSize, pickCount);
+            return new PortfolioOdds(single, exactProbability, true, maxOverlap);
+        }
+
         bool exact = lines.Count <= 2 || maxOverlap < Math.Max(0, 6 - pickCount);
         double probability = exact ? Math.Clamp(total, 0, 1) :
             (simulation ?? Simulate(lines, poolSize, pickCount)).Probability;
         return new PortfolioOdds(single, probability, exact, maxOverlap);
+    }
+
+    /// <summary>Exact P(at least one line matches 3+) for one uniform draw, counted over every
+    /// possible draw.</summary>
+    public static double ExactThreePlusProbability(IReadOnlyList<int[]> lines, int poolSize, int pickCount)
+    {
+        var (hits, total) = CountThreePlusDraws(lines, poolSize, pickCount);
+        return total == 0 ? 0 : (double)hits / total;
+    }
+
+    /// <summary>Counts the draws in which at least one line matches 3+ main numbers. Lines are
+    /// held as bitsets per ball, and per-line match counts are bit-sliced saturating counters
+    /// (≥1, ≥2, ≥3), so each enumerated draw costs a few word operations regardless of K. A branch
+    /// that already guarantees a hit is counted in closed form instead of enumerated.</summary>
+    public static (long Hits, long Total) CountThreePlusDraws(
+        IReadOnlyList<int[]> lines, int poolSize, int pickCount)
+    {
+        if (poolSize > MaxExactPoolSize)
+            throw new ArgumentOutOfRangeException(nameof(poolSize), $"Exact counting supports pools up to {MaxExactPoolSize}.");
+        long total = (long)Math.Round(Choose(poolSize, pickCount));
+        if (lines.Count == 0 || pickCount < 3 || pickCount > poolSize) return (0, total);
+
+        int words = (lines.Count + 63) / 64;
+        var ballLines = new ulong[poolSize + 1][];
+        for (int n = 0; n <= poolSize; n++) ballLines[n] = new ulong[words];
+        for (int l = 0; l < lines.Count; l++)
+            foreach (var n in lines[l]) ballLines[n][l >> 6] |= 1UL << (l & 63);
+
+        long hits = 0;
+        Parallel.For(1, poolSize - pickCount + 2, first =>
+        {
+            // counters[depth] holds ≥1, ≥2, ≥3 bitsets after `depth` balls have been chosen.
+            var counters = new ulong[pickCount + 1][];
+            for (int d = 0; d <= pickCount; d++) counters[d] = new ulong[3 * words];
+            Add(counters[0], counters[1], ballLines[first], words);
+            long local = CountFrom(1, first + 1, counters, ballLines, words, poolSize, pickCount);
+            Interlocked.Add(ref hits, local);
+        });
+        return (hits, total);
+    }
+
+    private static void Add(ulong[] from, ulong[] to, ulong[] ball, int words)
+    {
+        for (int w = 0; w < words; w++)
+        {
+            ulong ge1 = from[w], ge2 = from[words + w], ge3 = from[2 * words + w], b = ball[w];
+            to[w] = ge1 | b;
+            to[words + w] = ge2 | (ge1 & b);
+            to[2 * words + w] = ge3 | (ge2 & b);
+        }
+    }
+
+    private static long CountFrom(
+        int depth, int start, ulong[][] counters, ulong[][] ballLines, int words, int poolSize, int pickCount)
+    {
+        var state = counters[depth];
+        int remaining = pickCount - depth;
+        for (int w = 0; w < words; w++)
+            if (state[2 * words + w] != 0)
+                return (long)Math.Round(Choose(poolSize - start + 1, remaining));
+
+        long hits = 0;
+        if (remaining == 1)
+        {
+            for (int n = start; n <= poolSize; n++)
+            {
+                var ball = ballLines[n];
+                for (int w = 0; w < words; w++)
+                    if ((state[words + w] & ball[w]) != 0) { hits++; break; }
+            }
+            return hits;
+        }
+
+        for (int n = start; n <= poolSize - remaining + 1; n++)
+        {
+            Add(state, counters[depth + 1], ballLines[n], words);
+            hits += CountFrom(depth + 1, n + 1, counters, ballLines, words, poolSize, pickCount);
+        }
+        return hits;
+    }
+
+    /// <summary>Exact hit count over every possible draw when the pool fits a 64-bit mask;
+    /// otherwise a seeded Monte Carlo estimate.</summary>
+    public static PortfolioSimulation Evaluate(
+        IReadOnlyList<int[]> lines, int poolSize, int pickCount, int randomSeed = 20260914)
+    {
+        if (poolSize > MaxExactPoolSize) return Simulate(lines, poolSize, pickCount, randomSeed);
+        var (hits, total) = CountThreePlusDraws(lines, poolSize, pickCount);
+        double probability = (double)hits / total;
+        return new PortfolioSimulation(
+            (int)Math.Min(total, int.MaxValue), hits, probability, probability, probability, Exhaustive: true);
+    }
+
+    /// <summary>Seeded simulated annealing over single-ball swaps that minimises the summed
+    /// pairwise loss Σ P(both lines match 3+). Returns the lowest-loss portfolio seen, or null
+    /// when it is no better than the start. Duplicate lines and excluded balls are never produced.</summary>
+    private static List<int[]>? Refine(
+        IReadOnlyList<int[]> start, int[] legalNumbers, int pickCount, double[] pairTerm, Random rng)
+    {
+        int k = start.Count;
+        if (k < 2 || legalNumbers.Length <= pickCount) return null;
+
+        int maxBall = legalNumbers.Max();
+        var lines = start.Select(line => line.ToArray()).ToArray();
+        var has = lines.Select(line =>
+        {
+            var mask = new bool[maxBall + 1];
+            foreach (var n in line) mask[n] = true;
+            return mask;
+        }).ToArray();
+        var overlap = new int[k, k];
+        double loss = 0;
+        for (int i = 0; i < k; i++)
+            for (int j = i + 1; j < k; j++)
+            {
+                int shared = lines[i].Count(n => has[j][n]);
+                overlap[i, j] = overlap[j, i] = shared;
+                loss += pairTerm[shared];
+            }
+
+        double startLoss = loss, bestLoss = loss;
+        int[][]? best = null;
+        double initialTemperature = 0;
+        for (int s = 1; s < pairTerm.Length && initialTemperature <= 0; s++)
+            initialTemperature = pairTerm[s] - pairTerm[s - 1];
+        if (initialTemperature <= 0) return null;
+
+        int steps = RefinementBaseSteps + RefinementStepsPerLine * k;
+        for (int step = 0; step < steps; step++)
+        {
+            double temperature = initialTemperature * Math.Pow(1e-4, (double)step / steps);
+            int i = rng.Next(k), position = rng.Next(pickCount);
+            int removed = lines[i][position], added = legalNumbers[rng.Next(legalNumbers.Length)];
+            if (has[i][added]) continue;
+
+            double delta = 0;
+            for (int j = 0; j < k && !double.IsPositiveInfinity(delta); j++)
+            {
+                if (j == i) continue;
+                int shared = overlap[i, j] - (has[j][removed] ? 1 : 0) + (has[j][added] ? 1 : 0);
+                delta = shared == pickCount ? double.PositiveInfinity : delta + pairTerm[shared] - pairTerm[overlap[i, j]];
+            }
+            if (double.IsPositiveInfinity(delta)) continue;
+            if (delta > 0 && rng.NextDouble() >= Math.Exp(-delta / temperature)) continue;
+
+            for (int j = 0; j < k; j++)
+            {
+                if (j == i) continue;
+                int shared = overlap[i, j] - (has[j][removed] ? 1 : 0) + (has[j][added] ? 1 : 0);
+                overlap[i, j] = overlap[j, i] = shared;
+            }
+            has[i][removed] = false;
+            has[i][added] = true;
+            lines[i][position] = added;
+            loss += delta;
+            if (loss < bestLoss - 1e-15)
+            {
+                bestLoss = loss;
+                best = lines.Select(line => line.ToArray()).ToArray();
+            }
+        }
+
+        if (best is null || bestLoss >= startLoss) return null;
+        foreach (var line in best) Array.Sort(line);
+        return [.. best];
     }
 
     /// <summary>P(two specific lines that share <paramref name="shared"/> balls both match 3+

@@ -316,8 +316,9 @@ export default function Dashboard({
             {backtest.randomExpectedMatches.toFixed(2)} matches; no choice of
             numbers changes that in a fair independent draw. More distinct lines
             can improve coverage, at greater cost. Even disjoint lines can both
-            match three numbers in the same six-ball draw; portfolio odds are
-            generally estimates, not K times single-line odds.
+            match three numbers in the same six-ball draw, so portfolio odds are
+            below K times single-line odds; they are counted exactly over every
+            possible draw.
           </p>
         )}
 
@@ -379,7 +380,7 @@ export default function Dashboard({
                 {portfolio.maxPairwiseOverlap === 1 ? "" : "s"}
                 {portfolio.probabilityIsExact
                   ? ". Odds below are exact for this portfolio."
-                  : ". Odds below are reproducible Monte Carlo estimates, not guaranteed or globally optimal."}
+                  : ". Odds below are reproducible Monte Carlo estimates."}
               </p>
               <p className="verdict compact">
                 Chance of at least one line matching 3+ main numbers:{" "}
@@ -394,7 +395,9 @@ export default function Dashboard({
                 {formatPct(portfolio.singleLineThreePlusProbability)} per round (
                 {oneIn(portfolio.singleLineThreePlusProbability)}).
                 {portfolio.simulation &&
-                  ` Monte Carlo check: ${formatPct(portfolio.simulation.probability)} (95% CI ${formatPct(portfolio.simulation.ciLow)}–${formatPct(portfolio.simulation.ciHigh)}, ${portfolio.simulation.trials.toLocaleString()} draws).`}
+                  (portfolio.simulation.exhaustive
+                    ? ` Counted over all ${portfolio.simulation.trials.toLocaleString()} possible draws.`
+                    : ` Monte Carlo check: ${formatPct(portfolio.simulation.probability)} (95% CI ${formatPct(portfolio.simulation.ciLow)}–${formatPct(portfolio.simulation.ciHigh)}, ${portfolio.simulation.trials.toLocaleString()} draws).`)}
                 {portfolio.simulation?.randomDistinctProbability != null &&
                   ` ${portfolio.lineCount} random distinct lines: ${formatPct(portfolio.simulation.randomDistinctProbability)}.`}
               </p>
@@ -443,7 +446,7 @@ export default function Dashboard({
           </table>
           <p className="muted">
             These minimum counts do not guarantee the target chance. Use the
-            reported portfolio estimate and its confidence interval.
+            portfolio chance reported above for the lines actually played.
           </p>
 
           {bestOf && (

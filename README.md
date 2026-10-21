@@ -144,12 +144,29 @@ HTTP 409 Problem Details. See [Analysis.http](backend/LottoPredictor.Api/Analysi
 
 ### Three-plus portfolios and API changes
 
-The builder heuristically reduces pairwise overlap of three-plus hit events; it does not prove a
-globally optimal portfolio. Even two disjoint six-number lines can both match three numbers in
-one draw. Odds are exact for one/two lines or mutually exclusive hit events; other portfolios use
-100,000 seeded uniform simulations with a 95% confidence interval. Multi-round odds assume
-independent rounds. Minimum line counts derived from the union bound are necessary lower bounds,
-not guarantees of achieving a target chance. Bonus balls and Lucky Stars are outside this objective.
+The builder first greedily reduces pairwise overlap of three-plus hit events, then a seeded local
+search swaps single balls to reduce the summed pairwise loss further. The refined portfolio is
+kept only when its exact three-plus chance is higher. This improves coverage but does not prove
+the portfolio is globally optimal. Even two disjoint six-number lines can both match three
+numbers in one draw. Portfolio odds are **exact**: every possible draw (45,057,474 for UK Lotto)
+is counted using bit-sliced per-line match counters, typically in well under a second, and the
+same exact count is shown for an equal number of random distinct lines for comparison.
+Multi-round odds assume independent rounds. Minimum line counts derived from the union bound are
+necessary lower bounds, not guarantees of achieving a target chance. Bonus balls and Lucky Stars
+are outside this objective.
+
+Measured on UK Lotto (exact chance of at least one 3+ line per round; random = same number of
+random distinct lines):
+
+| Lines K | Random lines | Previous builder | Current builder | K × single-line odds (upper bound) |
+|---|---|---|---|---|
+| 10 | 10.50% | 10.78% | 10.81% | 10.86% |
+| 20 | 19.34% | 20.86% | 20.91% | 21.73% |
+| 30 | 27.68% | 30.25% | 30.30% | 32.59% |
+| 50 | 41.78% | 47.02% | 47.07% | 54.32% |
+
+The gains come only from line overlap, not from forecasting numbers: every individual line still
+has the same 1 in 92 chance of 3+ matches.
 
 API objective fields now use `ThreePlus` / `threePlus` instead of `FourPlus` / `fourPlus`;
 `minimumLinesForEvenOdds` replaces `linesForEvenOdds`. New predictions use model version

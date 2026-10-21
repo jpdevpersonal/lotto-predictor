@@ -106,12 +106,15 @@ public record PortfolioLineDto(
     /// <summary>Persisted prediction row, null for screen-only portfolios.</summary>
     PredictionDto? Prediction);
 
+/// <summary>Portfolio hit count; when <see cref="Exhaustive"/> every possible draw was counted,
+/// so <see cref="Probability"/> is exact and the interval collapses to it.</summary>
 public record PortfolioSimulationDto(
     int Trials,
     double Probability,
     double CiLow,
     double CiHigh,
-    double? RandomDistinctProbability);
+    double? RandomDistinctProbability,
+    bool Exhaustive = false);
 
 public record PortfolioDto(
     string? PortfolioId,
