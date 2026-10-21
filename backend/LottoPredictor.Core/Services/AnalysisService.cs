@@ -1,5 +1,6 @@
 using LottoPredictor.Core.Analysis;
 using LottoPredictor.Core.Data;
+using LottoPredictor.Core.Dtos;
 using LottoPredictor.Core.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Collections.Concurrent;
@@ -17,26 +18,30 @@ public sealed class AnalysisSnapshot
     public required ScoringStrategy ActiveStrategy { get; init; }
     public required IReadOnlyList<ScoringStrategy> AllStrategies { get; init; }
     public required int LearningGeneration { get; init; }
+    public bool UseAllHistory { get; init; }
     public IReadOnlyDictionary<string, double> HedgeWeights => Backtest.HedgeWeights;
     public int PoolSize => Features.Pool.PoolSize;
 }
 
 public interface IAnalysisService
 {
-    /// <summary>Returns the cached analysis snapshot, rebuilding it if a draw has been added.</summary>
-    Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default);
+    /// <summary>Reads the last analysis without recalculating. Generation requires current data.</summary>
+    Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default, bool requireCurrent = false);
+    AnalysisSnapshot? GetCachedSnapshot();
+    Task<AnalysisStatusDto> GetStatusAsync(CancellationToken ct = default);
+    Task<AnalysisSnapshot> RecalculateAsync(bool useAllHistory = false, CancellationToken ct = default);
     void Invalidate();
 }
 
 public class AnalysisOptions
 {
-    public int BacktestEvalWindow { get; set; } = 200;
+    public int BacktestEvalWindow { get; set; } = 1000;
     public int BacktestWarmup { get; set; } = 150;
 }
 
 /// <summary>Owns the derived state (features + walk-forward backtest + active strategy choice).
-/// Everything is recomputed automatically whenever a draw is added; nothing needs manual
-/// retraining. The active strategy is selected by the earlier part of the walk-forward window
+/// Recalculation is explicit; draw changes mark the last snapshot stale without deleting it.
+/// The active strategy is selected by the earlier part of the walk-forward window
 /// and its displayed performance comes only from the later chronological holdout.</summary>
 public class AnalysisService : IAnalysisService
 {
@@ -44,6 +49,13 @@ public class AnalysisService : IAnalysisService
     {
         public SemaphoreSlim Lock { get; } = new(1, 1);
         public AnalysisSnapshot? Snapshot { get; set; }
+        public object Sync { get; } = new();
+        public long Revision { get; set; }
+        public long AnalyzedRevision { get; set; }
+        public bool UseAllHistory { get; set; }
+        public bool IsCalculating { get; set; }
+        public int ProgressPercent { get; set; }
+        public string ProgressStage { get; set; } = "Not started";
     }
 
     private readonly IDbContextFactory<LottoDbContext> contextFactory;
@@ -61,24 +73,76 @@ public class AnalysisService : IAnalysisService
         this.lotterySelection = lotterySelection ?? new DefaultLotterySelection();
     }
 
-    public async Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default)
+    public AnalysisSnapshot? GetCachedSnapshot()
+    {
+        var state = profileStates.GetOrAdd(lotterySelection.Current.Key, _ => new ProfileAnalysisState());
+        lock (state.Sync) return state.Snapshot;
+    }
+
+    public async Task<AnalysisStatusDto> GetStatusAsync(CancellationToken ct = default)
+    {
+        var state = profileStates.GetOrAdd(lotterySelection.Current.Key, _ => new ProfileAnalysisState());
+        await using var db = await contextFactory.CreateDbContextAsync(ct);
+        int drawCount = await db.Draws.CountAsync(ct);
+        lock (state.Sync)
+            return new AnalysisStatusDto(
+                state.Snapshot is not null,
+                state.Snapshot is null || state.Revision != state.AnalyzedRevision ||
+                    state.Snapshot.Draws.Count != drawCount,
+                state.IsCalculating, state.UseAllHistory, drawCount,
+                state.Snapshot?.Draws.Count ?? 0, drawCount > options.BacktestWarmup + 2,
+                state.ProgressPercent, state.ProgressStage);
+    }
+
+    public async Task<AnalysisSnapshot> GetSnapshotAsync(
+        CancellationToken ct = default, bool requireCurrent = false)
+    {
+        if (requireCurrent)
+        {
+            var status = await GetStatusAsync(ct);
+            if (status.NeedsRecalculation || status.IsCalculating)
+                throw new AnalysisRequiredException("Recalculate this lottery before generating new predictions.");
+        }
+        return GetCachedSnapshot() ??
+            throw new AnalysisRequiredException("No analysis is available. Press Recalculate for this lottery.");
+    }
+
+    public async Task<AnalysisSnapshot> RecalculateAsync(
+        bool useAllHistory = false, CancellationToken ct = default)
     {
         var lottery = lotterySelection.Current;
         var state = profileStates.GetOrAdd(lottery.Key, _ => new ProfileAnalysisState());
-        var existing = state.Snapshot;
-        if (existing != null) return existing;
-
-        await state.Lock.WaitAsync(ct);
+        if (!await state.Lock.WaitAsync(0, ct))
+            throw new AnalysisRequiredException("This lottery is already being recalculated.");
+        long revision;
+        lock (state.Sync)
+        {
+            if (state.UseAllHistory != useAllHistory) state.Revision++;
+            state.UseAllHistory = useAllHistory;
+            state.IsCalculating = true;
+            state.ProgressPercent = 0;
+            state.ProgressStage = "Loading history and computing features";
+            revision = state.Revision;
+        }
+        void ReportProgress(int percent, string stage)
+        {
+            lock (state.Sync)
+            {
+                state.ProgressPercent = percent;
+                state.ProgressStage = stage;
+            }
+        }
         try
         {
-            if (state.Snapshot != null) return state.Snapshot;
-
             await using var db = await contextFactory.CreateDbContextAsync(ct);
             var draws = await db.Draws.AsNoTracking()
                 .OrderBy(d => d.Sequence)
                 .ToListAsync(ct);
             if (draws.Count == 0)
-                throw new InvalidOperationException("No draws in database; import the CSV first.");
+                throw new AnalysisRequiredException("No draws are available. Import or add results first.");
+            if (draws.Count <= options.BacktestWarmup + 2)
+                throw new AnalysisRequiredException(
+                    $"More than {options.BacktestWarmup + 2} draws are needed to recalculate.");
 
             var events = draws
                 .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(),
@@ -97,38 +161,52 @@ public class AnalysisService : IAnalysisService
                     ruleEras: lottery.BonusPoolRules)
                 : null;
 
-            // Learning step: only advance the optimizer when this dataset size has not already
-            // been analysed. Rebuilding the snapshot for the same data must be idempotent.
-            var learned = await db.LearnedStrategies.AsNoTracking()
-                .OrderByDescending(s => s.RecencyWeightedAvg)
-                .ToListAsync(ct);
             int drawCount = events.Count;
-            bool alreadyAnalysed = await db.StrategyPerformanceLogs.AsNoTracking()
-                .AnyAsync(log => log.DrawCount == drawCount, ct);
-            int previousGeneration = learned.Count > 0 ? learned.Max(s => s.Generation) : 0;
-            int generation = alreadyAnalysed ? previousGeneration : previousGeneration + 1;
-
-            var learnedStrategies = learned.Select(StrategyOptimizer.ToStrategy).ToList();
-            var seeds = learnedStrategies.Concat(ScoringStrategy.Candidates).ToList();
-            var newCandidates = alreadyAnalysed
-                ? []
-                : StrategyOptimizer.GenerateCandidates(seeds, generation);
+            int evalWindow = useAllHistory ? drawCount : options.BacktestEvalWindow;
+            int generation = 1;
+            int selectionCutoff = Backtester.SelectionCutoff(
+                drawCount, evalWindow, options.BacktestWarmup);
+            IReadOnlyList<ScoringStrategy> seeds = ScoringStrategy.Candidates;
+            ReportProgress(5, "Training strategies");
+            // Replay training from clean seeds. Saved winners may have seen today's historical
+            // holdout in an earlier rebuild, so they must never seed this validation.
+            if (selectionCutoff > options.BacktestWarmup + 2)
+            {
+                var training = Backtester.Run(
+                    Backtester.Prefix(events, selectionCutoff), seeds,
+                    evalWindow, options.BacktestWarmup,
+                    configuredPoolSize: lottery.MainPoolSize,
+                    poolExpansionDate: lottery.MainPoolExpansionDate,
+                    onProgress: (completed, total) =>
+                        ReportProgress(5 + completed * 25 / total, "Training strategies"),
+                    ct: ct);
+                seeds = training.Strategies
+                    .Where(r => r.Strategy.Name != Backtester.EnsembleName)
+                    .OrderByDescending(r => r.ThreePlusRate)
+                    .ThenByDescending(r => r.AvgMatches)
+                    .ThenBy(r => r.Strategy.Name)
+                    .Select(r => r.Strategy).ToList();
+            }
+            var newCandidates = StrategyOptimizer.GenerateCandidates(seeds, generation);
+            ReportProgress(30, "Validating strategies");
 
             var allStrategies = ScoringStrategy.Candidates
-                .Concat(learnedStrategies)
                 .Concat(newCandidates)
                 .DistinctBy(s => s.Name)
                 .ToList();
 
             var backtest = Backtester.Run(
-                events, allStrategies, options.BacktestEvalWindow, options.BacktestWarmup,
+                events, allStrategies, evalWindow, options.BacktestWarmup,
                 configuredPoolSize: lottery.MainPoolSize,
-                poolExpansionDate: lottery.MainPoolExpansionDate);
+                poolExpansionDate: lottery.MainPoolExpansionDate,
+                onProgress: (completed, total) =>
+                    ReportProgress(30 + completed * 65 / total, "Validating strategies"),
+                ct: ct);
 
-            if (!alreadyAnalysed)
-                await PersistLearningAsync(db, backtest, generation, drawCount, ct);
+            ReportProgress(95, "Saving analysis");
+            await PersistLearningAsync(db, backtest, generation, drawCount, ct);
 
-            state.Snapshot = new AnalysisSnapshot
+            var snapshot = new AnalysisSnapshot
             {
                 Draws = events,
                 Features = features,
@@ -141,16 +219,29 @@ public class AnalysisService : IAnalysisService
                 ActiveStrategy = backtest.Best.Strategy,
                 AllStrategies = allStrategies,
                 LearningGeneration = generation,
+                UseAllHistory = useAllHistory,
             };
-            return state.Snapshot;
+            lock (state.Sync)
+            {
+                state.Snapshot = snapshot;
+                state.AnalyzedRevision = revision;
+                state.ProgressPercent = 100;
+                state.ProgressStage = "Complete";
+            }
+            return snapshot;
         }
         finally
         {
+            lock (state.Sync)
+            {
+                state.IsCalculating = false;
+                if (state.ProgressPercent < 100) state.ProgressStage = "Recalculation did not complete";
+            }
             state.Lock.Release();
         }
     }
 
-    /// <summary>Keeps the best learned strategies for the next generation and appends a
+    /// <summary>Saves selection-period winners for reporting, not as future training seeds, and appends a
     /// performance log row per strategy so improvement over time is auditable.</summary>
     private static async Task PersistLearningAsync(
         LottoDbContext db, BacktestReport backtest, int generation, int drawCount, CancellationToken ct)
@@ -158,18 +249,18 @@ public class AnalysisService : IAnalysisService
         var handWritten = ScoringStrategy.Candidates.Select(s => s.Name).ToHashSet();
         handWritten.Add(Backtester.EnsembleName); // ensemble is adaptive, not a weight vector to keep
 
-        // Survivors are ranked on the same four-plus objective used to select the active
-        // strategy. Average matches are a tie-breaker only, so a lineage cannot survive merely
+        // Survivors are ranked on the same three-plus objective used to select the active
+        // strategy. Average matches are a tie-breaker only, so a candidate cannot survive merely
         // by improving a different metric.
-        double handWrittenBest = backtest.Strategies
+        double handWrittenBest = backtest.SelectionStrategies
             .Where(r => handWritten.Contains(r.Strategy.Name))
-            .Max(r => r.FourPlusRate);
-        var survivors = backtest.Strategies
+            .Max(r => r.ThreePlusRate);
+        var survivors = backtest.SelectionStrategies
             .Where(r => !handWritten.Contains(r.Strategy.Name))
-            .OrderByDescending(r => r.FourPlusRate)
-            .ThenByDescending(r => r.RecencyWeightedAvg)
+            .OrderByDescending(r => r.ThreePlusRate)
+            .ThenByDescending(r => r.AvgMatches)
             .Take(StrategyOptimizer.MaxLearnedKept)
-            .Where(r => r.FourPlusRate >= handWrittenBest)
+            .Where(r => r.ThreePlusRate >= handWrittenBest)
             .ToList();
 
         var existing = await db.LearnedStrategies.ToListAsync(ct);
@@ -226,7 +317,9 @@ public class AnalysisService : IAnalysisService
     public void Invalidate()
     {
         var lottery = lotterySelection.Current;
-        if (profileStates.TryGetValue(lottery.Key, out var state))
-            state.Snapshot = null;
+        var state = profileStates.GetOrAdd(lottery.Key, _ => new ProfileAnalysisState());
+        lock (state.Sync) state.Revision++;
     }
 }
+
+public sealed class AnalysisRequiredException(string message) : InvalidOperationException(message);

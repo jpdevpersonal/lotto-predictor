@@ -11,12 +11,12 @@ public interface IPredictionService
     Task<PredictionDto> GenerateAsync(bool excludeLastDrawNumbers = false, CancellationToken ct = default);
     Task<PredictionDto?> GetLatestAsync(CancellationToken ct = default);
     Task<IReadOnlyList<PredictionDto>> GetHistoryAsync(int limit = 100, CancellationToken ct = default);
-    /// <summary>Optimal K-line portfolio, computed on demand and never persisted.</summary>
+    /// <summary>Coverage-oriented K-line portfolio, computed on demand and never persisted.</summary>
     Task<PortfolioDto> GenerateLinesAsync(
         int count = 1,
         bool excludeLastDrawNumbers = false,
         CancellationToken ct = default);
-    /// <summary>Optimal K-line portfolio persisted as K predictions, so every line is evaluated
+    /// <summary>Coverage-oriented K-line portfolio persisted as K predictions, so every line is evaluated
     /// against each round of the next draw.</summary>
     Task<PortfolioDto> GeneratePortfolioAsync(
         int count = 10,
@@ -27,12 +27,14 @@ public interface IPredictionService
     Task<BestOfLinesDto> GenerateBestOfLinesAsync(int count = 50, CancellationToken ct = default);
 }
 
-public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory, IAnalysisService analysis)
+public class PredictionService(
+    IDbContextFactory<LottoDbContext> contextFactory, IAnalysisService analysis,
+    ILotterySelection? lotterySelection = null)
     : IPredictionService
 {
     public async Task<PredictionDto> GenerateAsync(bool excludeLastDrawNumbers = false, CancellationToken ct = default)
     {
-        var snapshot = await analysis.GetSnapshotAsync(ct);
+        var snapshot = await analysis.GetSnapshotAsync(ct, requireCurrent: true);
         var strategy = snapshot.ActiveStrategy;
         HashSet<int>? excludedMain = null;
         HashSet<int>? excludedLuckyStars = null;
@@ -62,7 +64,7 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
             CreatedUtc = DateTime.UtcNow,
             CutoffSequence = lastDraw.Sequence,
             CutoffDrawNumber = lastDraw.DrawNumber,
-            ModelVersion = strategy.Version,
+            ModelVersion = strategy.Version + (snapshot.UseAllHistory ? "/all-history" : "/recent-validation"),
             StrategyName = strategy.Name,
         };
         prediction.SetNumbers(result.Numbers);
@@ -94,7 +96,7 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         int count, bool excludeLastDrawNumbers, bool persist, CancellationToken ct)
     {
         count = Math.Clamp(count, 1, 200);
-        var snapshot = await analysis.GetSnapshotAsync(ct);
+        var snapshot = await analysis.GetSnapshotAsync(ct, requireCurrent: true);
         HashSet<int>? excludedMain = null;
         HashSet<int>? excludedLuckyStars = null;
         if (excludeLastDrawNumbers)
@@ -129,7 +131,8 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
                     CreatedUtc = createdUtc,
                     CutoffSequence = lastDraw.Sequence,
                     CutoffDrawNumber = lastDraw.DrawNumber,
-                    ModelVersion = snapshot.ActiveStrategy.Version,
+                    ModelVersion = snapshot.ActiveStrategy.Version +
+                        (snapshot.UseAllHistory ? "/all-history" : "/recent-validation"),
                     StrategyName = snapshot.ActiveStrategy.Name,
                     PortfolioId = portfolioId,
                     PortfolioRank = line.Rank,
@@ -151,10 +154,11 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
             .ToList();
         var simulation = new PortfolioSimulationDto(
             portfolio.CoverageOptimized.Trials,
-            Math.Round(portfolio.CoverageOptimized.Probability, 8),
-            Math.Round(portfolio.CoverageOptimized.CiLow, 8),
-            Math.Round(portfolio.CoverageOptimized.CiHigh, 8),
-            Math.Round(portfolio.RandomDistinct.Probability, 8));
+            Math.Round(portfolio.CoverageOptimized.Probability, 10),
+            Math.Round(portfolio.CoverageOptimized.CiLow, 10),
+            Math.Round(portfolio.CoverageOptimized.CiHigh, 10),
+            Math.Round(portfolio.RandomDistinct.Probability, 10),
+            portfolio.CoverageOptimized.Exhaustive);
         return ToPortfolioDto(
             portfolioId, createdUtc, snapshot.ActiveStrategy.Name, snapshot.ActiveStrategy.Version,
             lastDraw.DrawNumber, snapshot.Lottery.RoundCount, portfolio.Objective, portfolio.Odds,
@@ -178,10 +182,13 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
             .OrderBy(p => p.PortfolioRank)
             .ToListAsync(ct);
 
-        var snapshot = await analysis.GetSnapshotAsync(ct);
+        var lottery = analysis.GetCachedSnapshot()?.Lottery ??
+            (lotterySelection ?? new DefaultLotterySelection()).Current;
         var sets = rows.Select(r => r.Numbers()).ToList();
+        var simulation = PortfolioOptimizer.Evaluate(
+            sets, lottery.MainPoolSize, lottery.MainNumberCount);
         var odds = PortfolioOptimizer.ComputeOdds(
-            sets, snapshot.Features.Pool.NextPoolSize, snapshot.Features.PickCount);
+            sets, lottery.MainPoolSize, lottery.MainNumberCount, simulation);
         var lines = rows.Select((row, index) => new PortfolioLineDto(
             row.PortfolioRank ?? index + 1,
             row.Numbers(),
@@ -191,9 +198,12 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
             ToDto(row, null))).ToList();
         return ToPortfolioDto(
             latestId, rows[0].CreatedUtc, rows[0].StrategyName, rows[0].ModelVersion,
-            rows[0].CutoffDrawNumber, snapshot.Lottery.RoundCount,
-            $"P(at least one of K={rows.Count} fixed lines matches at least four main numbers in a round)",
-            odds, null, lines);
+            rows[0].CutoffDrawNumber, lottery.RoundCount,
+            $"P(at least one of K={rows.Count} fixed lines matches at least three main numbers in a round)",
+            odds, new PortfolioSimulationDto(
+                simulation.Trials, Math.Round(simulation.Probability, 10),
+                Math.Round(simulation.CiLow, 10), Math.Round(simulation.CiHigh, 10), null,
+                simulation.Exhaustive), lines);
     }
 
     private static PortfolioDto ToPortfolioDto(
@@ -201,7 +211,7 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         int cutoffDrawNumber, int roundCount, string objective, PortfolioOdds odds,
         PortfolioSimulationDto? simulation, IReadOnlyList<PortfolioLineDto> lines)
     {
-        double perRound = odds.FourPlusProbability;
+        double perRound = odds.ThreePlusProbability;
         double anyRound = 1 - Math.Pow(1 - perRound, roundCount);
 
         var best = lines
@@ -214,12 +224,12 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
         return new PortfolioDto(
             portfolioId, createdUtc, strategyName, modelVersion, cutoffDrawNumber, lines.Count,
             roundCount, objective,
-            Math.Round(odds.SingleLineFourPlusProbability, 10),
+            Math.Round(odds.SingleLineThreePlusProbability, 10),
             Math.Round(perRound, 10),
             odds.IsExact,
             Math.Round(anyRound, 10),
             odds.MaxPairwiseOverlap,
-            PortfolioOptimizer.LinesForTarget(0.5, odds.SingleLineFourPlusProbability, roundCount),
+            PortfolioOptimizer.LinesForTarget(0.5, odds.SingleLineThreePlusProbability, roundCount),
             simulation,
             evaluated ? best.Matches : null,
             evaluated ? best.Round : null,
@@ -230,7 +240,7 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
     public async Task<BestOfLinesDto> GenerateBestOfLinesAsync(int count = 50, CancellationToken ct = default)
     {
         count = Math.Clamp(count, 1, 200);
-        var snapshot = await analysis.GetSnapshotAsync(ct);
+        var snapshot = await analysis.GetSnapshotAsync(ct, requireCurrent: true);
         var (scores, strategy) = ActiveScores(snapshot);
         var lines = PredictionEngine.GenerateTopLines(snapshot.Features, scores, strategy, count);
         var (numbers, frequencies) = PredictionEngine.Consensus(lines, scores);
@@ -300,7 +310,7 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
             .OrderByDescending(p => p.Id)
             .FirstOrDefaultAsync(ct);
         if (prediction is null) return null;
-        return ToDto(prediction, await BuildExplanationAsync(prediction, ct));
+        return ToDto(prediction, BuildExplanation(prediction));
     }
 
     public async Task<IReadOnlyList<PredictionDto>> GetHistoryAsync(int limit = 100, CancellationToken ct = default)
@@ -317,10 +327,10 @@ public class PredictionService(IDbContextFactory<LottoDbContext> contextFactory,
 
     /// <summary>Rebuilds the explanation from the exact prefix of draws the prediction used
     /// (everything up to its cutoff sequence), so the numbers shown match what the model saw.</summary>
-    private async Task<IReadOnlyList<NumberExplanationDto>?> BuildExplanationAsync(
-        Prediction prediction, CancellationToken ct)
+    private IReadOnlyList<NumberExplanationDto>? BuildExplanation(Prediction prediction)
     {
-        var snapshot = await analysis.GetSnapshotAsync(ct);
+        var snapshot = analysis.GetCachedSnapshot();
+        if (snapshot is null) return null;
         var prefix = snapshot.Draws.Where(d => d.Sequence <= prediction.CutoffSequence).ToList();
         if (prefix.Count == 0) return null;
 

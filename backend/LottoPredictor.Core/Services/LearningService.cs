@@ -49,7 +49,7 @@ public class LearningService(IDbContextFactory<LottoDbContext> contextFactory, I
                 : fs.ChiSquarePValue < 0.05
                     ? $"Weak evidence of non-uniformity (p={fs.ChiSquarePValue:0.0000}); likely noise, monitored each draw."
                     : $"Ball frequencies are consistent with a fair machine (p={fs.ChiSquarePValue:0.0000}); " +
-                      "no exploitable bias exists in the current era.";
+                      "no detectable frequency bias; this does not prove that no bias exists.";
 
         var hedgeWeights = snapshot.HedgeWeights
             .OrderByDescending(kv => kv.Value)

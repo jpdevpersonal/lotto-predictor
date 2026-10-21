@@ -1,5 +1,20 @@
 namespace LottoPredictor.Core.Dtos;
 
+/// <summary>Manual analysis state for the selected lottery; reading it never runs a backtest.</summary>
+public sealed record AnalysisStatusDto(
+    bool HasAnalysis,
+    bool NeedsRecalculation,
+    bool IsCalculating,
+    bool UseAllHistory,
+    int DrawCount,
+    int AnalyzedDrawCount,
+    bool CanRecalculate,
+    int ProgressPercent = 0,
+    string ProgressStage = "Not started");
+
+/// <summary>Recalculates using the usual evaluation window or every eligible historical draw.</summary>
+public sealed record RecalculateAnalysisRequest(bool UseAllHistory = false);
+
 public record DrawDto(
     int Id,
     int Sequence,
@@ -91,12 +106,15 @@ public record PortfolioLineDto(
     /// <summary>Persisted prediction row, null for screen-only portfolios.</summary>
     PredictionDto? Prediction);
 
+/// <summary>Portfolio hit count; when <see cref="Exhaustive"/> every possible draw was counted,
+/// so <see cref="Probability"/> is exact and the interval collapses to it.</summary>
 public record PortfolioSimulationDto(
     int Trials,
     double Probability,
     double CiLow,
     double CiHigh,
-    double RandomDistinctProbability);
+    double? RandomDistinctProbability,
+    bool Exhaustive = false);
 
 public record PortfolioDto(
     string? PortfolioId,
@@ -107,16 +125,16 @@ public record PortfolioDto(
     int LineCount,
     int RoundCount,
     string Objective,
-    /// <summary>P(one line matches 4+) in one round.</summary>
-    double SingleLineFourPlusProbability,
-    /// <summary>P(at least one line matches 4+) in one round; exact when ProbabilityIsExact.</summary>
-    double PortfolioFourPlusProbability,
+    /// <summary>P(one line matches 3+) in one round.</summary>
+    double SingleLineThreePlusProbability,
+    /// <summary>P(at least one line matches 3+) in one round; exact when ProbabilityIsExact.</summary>
+    double PortfolioThreePlusProbability,
     bool ProbabilityIsExact,
-    /// <summary>P(at least one line matches 4+ in at least one round of the next draw night).</summary>
-    double AnyRoundFourPlusProbability,
+    /// <summary>P(at least one line matches 3+ in at least one round of the next draw night).</summary>
+    double AnyRoundThreePlusProbability,
     int MaxPairwiseOverlap,
-    /// <summary>Lines needed for a 50% chance of a 4+ match on one draw night.</summary>
-    int LinesForEvenOdds,
+    /// <summary>Necessary minimum from the union bound, not a guaranteed 50% chance.</summary>
+    int MinimumLinesForEvenOdds,
     PortfolioSimulationDto? Simulation,
     /// <summary>Best match count over all lines and evaluated rounds, once evaluated.</summary>
     int? BestMatches,
@@ -174,10 +192,10 @@ public record StrategyBacktestDto(
     double Pct1,
     double Pct2,
     double Pct3Plus,
-    int FourPlusHits,
-    double FourPlusRate,
-    double FourPlusCiLow,
-    double FourPlusCiHigh,
+    int ThreePlusHits,
+    double ThreePlusRate,
+    double ThreePlusCiLow,
+    double ThreePlusCiHigh,
     bool IsBest,
     bool IsLearned);
 
@@ -192,8 +210,8 @@ public record BacktestingDto(
     double RandomPct1,
     double RandomPct2,
     double RandomPct3Plus,
-    double RandomFourPlusProbability,
-    double RandomExpectedFourPlusHits,
+    double RandomThreePlusProbability,
+    double RandomExpectedThreePlusHits,
     string Verdict);
 
 public record LearnedStrategyDto(

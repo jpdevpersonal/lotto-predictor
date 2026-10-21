@@ -79,8 +79,8 @@ dotnet test
   requires one round of five numbers plus two Lucky Stars. Both games support prediction,
   candidate lines, history, inline correction, statistics, learning, and backtesting.
 - The History tab loads the newest 100 rounds initially. Use **Load All** to retrieve the complete
-  history. Correcting numbers automatically invalidates and rebuilds the analysis; predictions
-  evaluated against the corrected round are recalculated. A missing second round can be added to
+  history. Correcting numbers marks the analysis stale without rebuilding it; match evaluations
+  against the corrected round are updated immediately. A missing second round can be added to
   the newest draw group from this view.
 - To re-import a CSV from scratch, stop the API and delete the corresponding database:
   `backend/LottoPredictor.Api/lotto.db` or `backend/LottoPredictor.Api/euromillions.db`.
@@ -90,9 +90,9 @@ dotnet test
   `dotnet run --launch-profile http -- --CsvImportPath=/path/to/file.csv`
 - To point at a different EuroMillions CSV:
   `dotnet run --launch-profile http -- --EuroMillionsCsvImportPath=/path/to/euromillions.csv`
-- The dashboard portfolio control chooses fixed `K` lines, defaulting to `1`. The reported primary
-  objective is `P(at least one of K fixed lines matches at least four main numbers)`. Main-number
-  matches are evaluated per line; four numbers scattered across different lines are not counted as
+- The dashboard portfolio control chooses fixed `K` lines, defaulting to `3`. The reported primary
+  objective is `P(at least one of K fixed lines matches at least three main numbers)`. Main-number
+  matches are evaluated per line; three numbers scattered across different lines are not counted as
   a hit. Bonus balls and Lucky Stars are shown separately.
 - To reproduce the revised comparison, start the API and request the same `count` for each supported
   game:
@@ -104,11 +104,29 @@ curl -H 'X-Lottery: euromillions' 'http://localhost:5080/api/backtesting'
 curl -H 'X-Lottery: euromillions' 'http://localhost:5080/api/predictions/lines?count=50'
 ```
 
-  The backtesting response contains exact single-line random four-plus probability, expected random
-  four-plus hits, observed strategy hit counts/rates, and confidence intervals. The lines response
+  The backtesting response contains exact single-line random three-plus probability, expected random
+  three-plus hits, observed strategy hit counts/rates, and confidence intervals. The lines response
   contains coverage-optimised portfolio probability and a matched random-distinct portfolio baseline
   estimated with reproducible simulation. These comparisons do not assume historical results contain
   a predictive advantage.
+- Validation defaults to the last 1,000 available draws after a 150-draw warmup: the earlier
+  two-thirds select the strategy, the later third reports performance. Genetic training is replayed
+  from clean built-in seeds before the holdout; persisted winners are not reused. Sparse-hit
+  warnings remain important even with this longer window. Historical checks are exploratory.
+- Analysis never runs automatically at startup or after adding/correcting a result. Press the
+  dashboard **Recalculate** button: red means missing/stale analysis; green means current.
+  New predictions are blocked while stale, but existing analysis and saved results stay visible.
+  This applies independently to UK Lotto, EuroMillions and Set For Life.
+- **Use all available history for training/backtesting** defaults off. Toggling it immediately
+  recalculates that lottery. On extends evaluation to all draws after warmup; feature histories
+  already use all draws in both modes. Full-history calculation can take significantly longer.
+  Snapshot/options reset when the API restarts; draw and prediction records do not.
+- `GET /api/analysis/status` is cheap. `POST /api/analysis/recalculate` takes
+  `{"useAllHistory": false}` (or `true`), plus the normal `X-Lottery` and mutation-key headers.
+  Before requesting backtesting/prediction endpoints in the examples above, recalculate first.
+- Portfolio probabilities are generally Monte Carlo estimates with confidence intervals, not
+  `K × single-line odds`. The displayed minimum line counts are lower bounds, not guarantees.
+  API fields now use `threePlus`; `minimumLinesForEvenOdds` replaces `linesForEvenOdds`.
 - Recommended VS Code extensions: **C# Dev Kit** for backend debugging (F5 works against the
   `http` launch profile); the built-in TypeScript support handles the frontend.
 - The API port is pinned to 5080 in

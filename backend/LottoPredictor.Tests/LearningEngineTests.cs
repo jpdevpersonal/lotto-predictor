@@ -35,6 +35,19 @@ public class LearningEngineTests
     }
 
     [Fact]
+    public void Exact_hit_tail_supports_different_pool_eras_in_full_history_validation()
+    {
+        Assert.Equal(0.432, StatFunctions.PoissonBinomialUpperTail([0.2, 0.4, 0.8], 2), 12);
+        Assert.Equal(0.064, StatFunctions.PoissonBinomialUpperTail([0.2, 0.4, 0.8], 3), 12);
+        Assert.Equal(1, StatFunctions.PoissonBinomialUpperTail([0, 1], 1));
+        Assert.Equal(0, StatFunctions.PoissonBinomialUpperTail([0, 1], 2));
+        Assert.Equal(StatFunctions.BinomialUpperTail(100, 3, 0.01),
+            StatFunctions.PoissonBinomialUpperTail(Enumerable.Repeat(0.01, 100).ToArray(), 3), 12);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            StatFunctions.PoissonBinomialUpperTail([double.NaN], 1));
+    }
+
+    [Fact]
     public void Fair_data_yields_small_bias_z_and_uniform_chi_square()
     {
         var draws = RandomHistory(600, 59, seed: 11);

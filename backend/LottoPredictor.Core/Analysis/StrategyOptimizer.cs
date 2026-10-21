@@ -2,11 +2,8 @@ using LottoPredictor.Core.Models;
 
 namespace LottoPredictor.Core.Analysis;
 
-/// <summary>Genetic search over the continuous strategy-weight space. Each analysis rebuild is one
-/// generation: elite strategies are mutated with an annealed step size (exploitation), pairs of
-/// parents are crossed over (recombination), and fresh random immigrants keep diversity
-/// (exploration). All candidates are judged by the same leak-free walk-forward backtest as the
-/// hand-written strategies, so selection stays honest.</summary>
+/// <summary>Generates mutations, crossovers and random candidates from training-only seeds.
+/// Analysis replays one clean generation per snapshot, without inheriting saved winners.</summary>
 public static class StrategyOptimizer
 {
     public const int MaxLearnedKept = 5;

@@ -1,4 +1,5 @@
 using LottoPredictor.Core.Data;
+using LottoPredictor.Core.Analysis;
 using LottoPredictor.Core.Dtos;
 using LottoPredictor.Core.Models;
 using LottoPredictor.Core.Services;
@@ -54,10 +55,16 @@ public sealed class ServiceTests : IDisposable
 
     public void Dispose() => _factory.Dispose();
 
-    private void SeedDraws(int count, int poolSize = 59)
+    private async Task<PredictionDto> GenerateFromCurrentAnalysisAsync()
+    {
+        await _analysis.RecalculateAsync();
+        return await _predictionService.GenerateAsync();
+    }
+
+    private void SeedDraws(int count, int poolSize = 59, int pickCount = 6)
     {
         using var db = _factory.CreateDbContext();
-        var events = TestData.RandomHistory(count, poolSize);
+        var events = TestData.RandomHistory(count, poolSize, pickCount: pickCount);
         foreach (var e in events)
         {
             var draw = new Draw
@@ -133,12 +140,42 @@ public sealed class ServiceTests : IDisposable
     {
         SeedDraws(200);
 
-        var first = await _analysis.GetSnapshotAsync();
+        var first = await _analysis.RecalculateAsync();
         _analysis.Invalidate();
-        var second = await _analysis.GetSnapshotAsync();
+        var second = await _analysis.RecalculateAsync();
 
         Assert.Equal(first.Draws.Count, second.Draws.Count);
         Assert.Equal(first.LearningGeneration, second.LearningGeneration);
+        Assert.Equal(first.ActiveStrategy, second.ActiveStrategy);
+        Assert.Equal(first.AllStrategies, second.AllStrategies);
+    }
+
+    [Fact]
+    public async Task Saved_winners_and_changed_holdout_cannot_influence_training_or_selection()
+    {
+        SeedDraws(200);
+        var first = await _analysis.RecalculateAsync();
+        using (var db = _factory.CreateDbContext())
+        {
+            db.LearnedStrategies.Add(new LearnedStrategy
+            {
+                Name = "learned-contaminated", WLongTerm = 100, Generation = 99,
+            });
+            int cutoff = Backtester.SelectionCutoff(200, 30, 150);
+            foreach (var draw in db.Draws.Where(d => d.Sequence > cutoff))
+            {
+                draw.N1 = 1; draw.N2 = 2; draw.N3 = 3;
+                draw.N4 = 4; draw.N5 = 5; draw.N6 = 6;
+            }
+            await db.SaveChangesAsync();
+        }
+        _analysis.Invalidate();
+        var second = await _analysis.RecalculateAsync();
+        Assert.Equal(first.AllStrategies, second.AllStrategies);
+        Assert.Equal(first.ActiveStrategy, second.ActiveStrategy);
+        Assert.Equal(first.Backtest.SelectionStrategies.SelectMany(s => s.MatchCounts),
+            second.Backtest.SelectionStrategies.SelectMany(s => s.MatchCounts));
+        Assert.DoesNotContain(second.AllStrategies, s => s.Name == "learned-contaminated");
     }
 
     [Fact]
@@ -185,6 +222,7 @@ public sealed class ServiceTests : IDisposable
         ]));
         var statistics = new StatisticsService(_analysis, _drawService);
 
+        await _analysis.RecalculateAsync();
         var result = await statistics.GetStatisticsAsync();
 
         Assert.Equal(2, result.LatestRounds.Count);
@@ -200,6 +238,7 @@ public sealed class ServiceTests : IDisposable
         var second = await _drawService.AddDrawAsync(new AddDrawRequest([3, 12, 21, 30, 39, 48]));
         var statistics = new StatisticsService(_analysis, _drawService);
 
+        await _analysis.RecalculateAsync();
         var result = await statistics.GetStatisticsAsync();
 
         Assert.NotEqual(first.DrawNumber, second.DrawNumber);
@@ -269,29 +308,137 @@ public sealed class ServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task AddDraw_recomputes_statistics_automatically()
+    public async Task AddDraw_marks_analysis_stale_without_recalculating_and_blocks_generation()
     {
         SeedDraws(200);
-        var before = await _analysis.GetSnapshotAsync();
+        var before = await _analysis.RecalculateAsync();
         await _drawService.AddDrawAsync(new AddDrawRequest([1, 2, 3, 4, 5, 6]));
-        var after = await _analysis.GetSnapshotAsync();
+        var cached = await _analysis.GetSnapshotAsync();
+        var status = await _analysis.GetStatusAsync();
+        Assert.Same(before, cached);
+        Assert.True(status.NeedsRecalculation);
+        Assert.Equal(201, status.DrawCount);
+        Assert.Equal(200, status.AnalyzedDrawCount);
+        await Assert.ThrowsAsync<AnalysisRequiredException>(() => _predictionService.GenerateAsync());
+        var after = await _analysis.RecalculateAsync();
 
         Assert.Equal(200, before.Draws.Count);
         Assert.Equal(201, after.Draws.Count);
         Assert.Equal(before.Features.For(1).TotalCount + 1, after.Features.For(1).TotalCount);
+        Assert.False((await _analysis.GetStatusAsync()).NeedsRecalculation);
+    }
+
+    [Fact]
+    public async Task Initial_reads_never_recalculate_or_create_learning_logs()
+    {
+        SeedDraws(200);
+        var status = await _analysis.GetStatusAsync();
+        Assert.False(status.HasAnalysis);
+        Assert.True(status.NeedsRecalculation);
+        Assert.False(status.UseAllHistory);
+        Assert.True(status.CanRecalculate);
+        await Assert.ThrowsAsync<AnalysisRequiredException>(() => _analysis.GetSnapshotAsync());
+        await Assert.ThrowsAsync<AnalysisRequiredException>(() => _predictionService.GenerateAsync());
+        using var db = _factory.CreateDbContext();
+        Assert.Empty(db.StrategyPerformanceLogs);
+        Assert.Empty(db.LearnedStrategies);
+    }
+
+    [Fact]
+    public async Task All_history_extends_validation_without_changing_full_history_features()
+    {
+        SeedDraws(165);
+        var analysis = new AnalysisService(_factory, new AnalysisOptions
+        {
+            BacktestEvalWindow = 6, BacktestWarmup = 150,
+        });
+        var recent = await analysis.RecalculateAsync();
+        var all = await analysis.RecalculateAsync(useAllHistory: true);
+        Assert.Equal(6, recent.Backtest.SelectionEvaluated + recent.Backtest.HoldoutEvaluated);
+        Assert.Equal(15, all.Backtest.SelectionEvaluated + all.Backtest.HoldoutEvaluated);
+        Assert.Equal(165, recent.Draws.Count);
+        Assert.Equal(recent.Features.For(1).TotalCount, all.Features.For(1).TotalCount);
+        Assert.True((await analysis.GetStatusAsync()).UseAllHistory);
+        Assert.False((await analysis.GetStatusAsync()).NeedsRecalculation);
+        var reset = await analysis.RecalculateAsync(useAllHistory: false);
+        Assert.False(reset.UseAllHistory);
+        var status = await analysis.GetStatusAsync();
+        Assert.Equal(100, status.ProgressPercent);
+        Assert.Equal("Complete", status.ProgressStage);
+        Assert.False(status.IsCalculating);
+        Assert.Equal(6, reset.Backtest.SelectionEvaluated + reset.Backtest.HoldoutEvaluated);
+    }
+
+    [Fact]
+    public async Task Correcting_draws_without_changing_count_marks_analysis_stale()
+    {
+        SeedDraws(165);
+        var before = await _analysis.RecalculateAsync();
+        var latest = (await _drawService.GetLatestAsync())!;
+        await _drawService.UpdateDrawAsync(latest.Id, new UpdateDrawRequest([1, 2, 3, 4, 5, 6]));
+        var status = await _analysis.GetStatusAsync();
+        Assert.Equal(status.DrawCount, status.AnalyzedDrawCount);
+        Assert.True(status.NeedsRecalculation);
+        Assert.Same(before, await _analysis.GetSnapshotAsync());
+    }
+
+    private sealed class FixedLotterySelection(LotteryProfile profile) : ILotterySelection
+    {
+        public LotteryProfile Current => profile;
+    }
+
+    [Theory]
+    [InlineData("uk-lotto")]
+    [InlineData("euromillions")]
+    [InlineData("set-for-life")]
+    public async Task Manual_recalculation_and_stale_generation_guard_work_for_every_lottery(string key)
+    {
+        var lottery = LotteryProfile.FromKey(key);
+        var selection = new FixedLotterySelection(lottery);
+        SeedDraws(165, lottery.MainPoolSize, lottery.MainNumberCount);
+        using (var db = _factory.CreateDbContext())
+        {
+            if (!lottery.BonusSharesMainPool)
+                foreach (var draw in db.Draws)
+                {
+                    draw.Bonus = 1;
+                    draw.Bonus2 = lottery.BonusNumberCount == 2 ? 2 : null;
+                }
+            await db.SaveChangesAsync();
+        }
+        var analysis = new AnalysisService(_factory, new AnalysisOptions
+        {
+            BacktestEvalWindow = 6, BacktestWarmup = 150,
+        }, selection);
+        var predictions = new PredictionService(_factory, analysis, selection);
+        var draws = new DrawService(_factory, analysis, selection);
+        Assert.True((await analysis.GetStatusAsync()).NeedsRecalculation);
+        Assert.False((await analysis.GetStatusAsync()).UseAllHistory);
+        await Assert.ThrowsAsync<AnalysisRequiredException>(() => predictions.GenerateAsync());
+        await analysis.RecalculateAsync();
+        Assert.False((await analysis.GetStatusAsync()).NeedsRecalculation);
+        var prediction = await predictions.GenerateAsync();
+        Assert.Equal(lottery.MainNumberCount, prediction.Numbers.Length);
+        await draws.AddDrawAsync(new AddDrawRequest(
+            Enumerable.Range(1, lottery.MainNumberCount).ToArray(),
+            Bonus: lottery.BonusSharesMainPool ? 10 : null,
+            LuckyStars: lottery.BonusSharesMainPool ? null :
+                Enumerable.Range(1, lottery.BonusNumberCount).ToArray()));
+        Assert.True((await analysis.GetStatusAsync()).NeedsRecalculation);
+        await Assert.ThrowsAsync<AnalysisRequiredException>(() => predictions.GenerateAsync());
     }
 
     [Fact]
     public async Task Generate_stores_prediction_with_cutoff_and_explanation()
     {
         SeedDraws(200);
-        var prediction = await _predictionService.GenerateAsync();
+        var prediction = await GenerateFromCurrentAnalysisAsync();
 
         Assert.Equal(6, prediction.Numbers.Distinct().Count());
         Assert.Equal(200, prediction.CutoffSequence);
         Assert.NotNull(prediction.Explanation);
         Assert.Equal(6, prediction.Explanation!.Count);
-        Assert.StartsWith("v3/", prediction.ModelVersion);
+        Assert.StartsWith("v4-three-plus/", prediction.ModelVersion);
         Assert.Null(prediction.Matches);
 
         var latest = await _predictionService.GetLatestAsync();
@@ -303,7 +450,7 @@ public sealed class ServiceTests : IDisposable
     public async Task Adding_result_evaluates_outstanding_prediction()
     {
         SeedDraws(200);
-        var prediction = await _predictionService.GenerateAsync();
+        var prediction = await GenerateFromCurrentAnalysisAsync();
 
         // Enter an actual result that shares exactly three numbers with the prediction.
         var predicted = prediction.Numbers;
@@ -320,15 +467,17 @@ public sealed class ServiceTests : IDisposable
     public async Task Portfolio_is_persisted_and_every_line_is_evaluated_against_both_rounds()
     {
         SeedDraws(200);
-        var single = await _predictionService.GenerateAsync();
+        var single = await GenerateFromCurrentAnalysisAsync();
         var portfolio = await _predictionService.GeneratePortfolioAsync(count: 8);
 
         Assert.NotNull(portfolio.PortfolioId);
         Assert.Equal(8, portfolio.LineCount);
         Assert.Equal(2, portfolio.RoundCount);
         Assert.True(portfolio.ProbabilityIsExact);
-        Assert.Equal(8 * portfolio.SingleLineFourPlusProbability, portfolio.PortfolioFourPlusProbability, 9);
-        Assert.Equal(1 - Math.Pow(1 - portfolio.PortfolioFourPlusProbability, 2), portfolio.AnyRoundFourPlusProbability, 9);
+        Assert.NotNull(portfolio.Simulation);
+        Assert.True(portfolio.Simulation.Exhaustive);
+        Assert.Equal(portfolio.Simulation.Probability, portfolio.PortfolioThreePlusProbability, 9);
+        Assert.Equal(1 - Math.Pow(1 - portfolio.PortfolioThreePlusProbability, 2), portfolio.AnyRoundThreePlusProbability, 9);
         Assert.All(portfolio.Lines, line => Assert.NotNull(line.Prediction));
         Assert.Null(portfolio.BestMatches);
 
@@ -348,7 +497,7 @@ public sealed class ServiceTests : IDisposable
         Assert.Equal(4, latest.BestMatches);
         Assert.Equal(1, latest.BestMatchesRound);
         Assert.Equal(3, latest.BestMatchesRank);
-        Assert.Equal(portfolio.PortfolioFourPlusProbability, latest.PortfolioFourPlusProbability, 9);
+        Assert.Equal(portfolio.PortfolioThreePlusProbability, latest.PortfolioThreePlusProbability, 9);
     }
 
     [Fact]
@@ -389,14 +538,14 @@ public sealed class ServiceTests : IDisposable
                 Assert.Equal(2, second.Matches);
                 Assert.Equal(1, second.BonusMatches);
             });
-        Assert.Equal(202, (await _analysis.GetSnapshotAsync()).Draws.Count);
+        Assert.Equal(202, (await _analysis.RecalculateAsync()).Draws.Count);
     }
 
     [Fact]
     public async Task Adding_latest_round_preserves_first_round_evaluation()
     {
         SeedDraws(200);
-        var prediction = await _predictionService.GenerateAsync();
+        var prediction = await GenerateFromCurrentAnalysisAsync();
         var predicted = prediction.Numbers;
         var other = Enumerable.Range(1, 59).Except(predicted).ToArray();
         var firstRound = predicted.Take(1).Concat(other.Take(5)).ToArray();
@@ -423,7 +572,7 @@ public sealed class ServiceTests : IDisposable
     public async Task Correcting_draw_recalculates_prediction_evaluated_against_it()
     {
         SeedDraws(200);
-        var prediction = await _predictionService.GenerateAsync();
+        var prediction = await GenerateFromCurrentAnalysisAsync();
         var nonPredicted = Enumerable.Range(1, 59).Except(prediction.Numbers).ToArray();
         var original = prediction.Numbers.Take(1).Concat(nonPredicted.Take(5)).ToArray();
         var added = await _drawService.AddDrawAsync(new AddDrawRequest(original));
@@ -434,14 +583,14 @@ public sealed class ServiceTests : IDisposable
         var evaluated = (await _predictionService.GetHistoryAsync()).Single(item => item.Id == prediction.Id);
         Assert.Equal(4, evaluated.Matches);
         Assert.Equal(corrected.OrderBy(number => number), evaluated.ActualNumbers);
-        Assert.Equal(201, (await _analysis.GetSnapshotAsync()).Draws.Count);
+        Assert.Equal(201, (await _analysis.RecalculateAsync()).Draws.Count);
     }
 
     [Fact]
     public async Task Correcting_one_round_does_not_change_the_other_evaluation()
     {
         SeedDraws(200);
-        var prediction = await _predictionService.GenerateAsync();
+        var prediction = await GenerateFromCurrentAnalysisAsync();
         var predicted = prediction.Numbers;
         var other = Enumerable.Range(1, 59).Except(predicted).ToArray();
         var added = await _drawService.AddDrawRoundsAsync(new AddDrawRoundsRequest(
@@ -462,7 +611,7 @@ public sealed class ServiceTests : IDisposable
     {
         SeedDraws(200);
         await _drawService.AddDrawAsync(new AddDrawRequest([1, 2, 3, 4, 5, 6]));
-        var prediction = await _predictionService.GenerateAsync();
+        var prediction = await GenerateFromCurrentAnalysisAsync();
 
         Assert.Null(prediction.Matches);
         Assert.Equal(201, prediction.CutoffSequence);
@@ -472,7 +621,7 @@ public sealed class ServiceTests : IDisposable
     public async Task Explanation_reflects_data_at_cutoff_not_later_draws()
     {
         SeedDraws(200);
-        var prediction = await _predictionService.GenerateAsync();
+        var prediction = await GenerateFromCurrentAnalysisAsync();
         var explanationBefore = (await _predictionService.GetLatestAsync())!.Explanation!;
 
         // Add a draw containing the first predicted number; the stored prediction's

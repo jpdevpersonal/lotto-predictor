@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
+  AnalysisStatusDto,
   BacktestingDto,
   BestOfLinesDto,
   LearningDto,
   PredictionDto,
   PortfolioDto,
   PortfolioLineDto,
-  StatisticsDto,
+  DrawHistoryDto,
   LotteryProfile,
 } from "../types";
 
@@ -42,8 +43,7 @@ function oneIn(probability: number) {
   return `1 in ${Math.round(1 / probability).toLocaleString()}`;
 }
 
-/** Lines needed for a target chance of a 4+ match on one draw night, with the optimal
- * (pairwise overlap ≤ 1) design where the portfolio chance is exactly K × single-line odds. */
+/** Necessary minimum from the union bound, not an achievable-odds guarantee. */
 function linesForTarget(target: number, singleLine: number, rounds: number) {
   return Math.ceil((1 - Math.pow(1 - target, 1 / rounds)) / singleLine - 1e-9);
 }
@@ -63,7 +63,9 @@ export default function Dashboard({
   lottery: LotteryProfile;
   onAddResult: () => void;
 }) {
-  const [stats, setStats] = useState<StatisticsDto | null>(null);
+  const [draws, setDraws] = useState<DrawHistoryDto | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatusDto | null>(null);
+  const [recalculating, setRecalculating] = useState(false);
   const [backtest, setBacktest] = useState<BacktestingDto | null>(null);
   const [prediction, setPrediction] = useState<PredictionDto | null>(null);
   const [history, setHistory] = useState<PredictionDto[]>([]);
@@ -79,15 +81,18 @@ export default function Dashboard({
 
   const load = useCallback(async () => {
     try {
-      const [s, b, p, h, l, f] = await Promise.all([
-        api.statistics(),
-        api.backtesting(),
+      const [status, d, p, h, f] = await Promise.all([
+        api.analysisStatus(),
+        api.drawHistory(),
         api.latestPrediction(),
         api.predictionHistory(),
-        api.learning(),
         api.latestPortfolio(),
       ]);
-      setStats(s);
+      const [b, l] = status.hasAnalysis
+        ? await Promise.all([api.backtesting(), api.learning()])
+        : [null, null];
+      setAnalysisStatus(status);
+      setDraws(d);
       setBacktest(b);
       setPrediction(p);
       setHistory(h ?? []);
@@ -102,6 +107,48 @@ export default function Dashboard({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let active = true;
+    let pending = false;
+    const refreshStatus = () => {
+      if (pending) return;
+      pending = true;
+      void api.analysisStatus().then((status) => {
+        if (active) setAnalysisStatus(status);
+      }).catch((e: unknown) => {
+        if (active) setError(e instanceof Error ? e.message : "Failed to refresh analysis status");
+      }).finally(() => { pending = false; });
+    };
+    window.addEventListener("focus", refreshStatus);
+    const timer = window.setInterval(refreshStatus,
+      recalculating || analysisStatus?.isCalculating ? 1000 : 15000);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refreshStatus);
+      window.clearInterval(timer);
+    };
+  }, [recalculating, analysisStatus?.isCalculating]);
+
+  const recalculate = async (useAllHistory: boolean) => {
+    setRecalculating(true);
+    setAnalysisStatus((current) => current && ({
+      ...current, useAllHistory, needsRecalculation: true, isCalculating: true,
+      progressPercent: 0, progressStage: "Starting recalculation",
+    }));
+    try {
+      await api.recalculate(useAllHistory);
+      await load();
+      setBestOf(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Recalculation failed");
+      setAnalysisStatus((current) => current && ({
+        ...current, needsRecalculation: true, isCalculating: false,
+      }));
+    } finally {
+      setRecalculating(false);
+    }
+  };
 
   const generate = async () => {
     setGenerating(true);
@@ -146,22 +193,70 @@ export default function Dashboard({
     }
   };
 
-  if (!stats) return <p className="loading-state">{error || "Loading…"}</p>;
+  if (!draws || !analysisStatus)
+    return <p className="loading-state">{error || "Loading…"}</p>;
+  const latestDraw = draws.items[0];
+  const latestRounds = draws.items.filter((draw) => draw.date === latestDraw?.date)
+    .sort((a, b) => a.sequence - b.sequence);
+  const busy = recalculating || analysisStatus.isCalculating;
+  const predictionBlocked = busy || analysisStatus.needsRecalculation;
 
   return (
     <div>
       {error && <p className="error">{error}</p>}
 
+      <section aria-label="Manual analysis controls">
+        <div className="actions">
+          <button
+            className={`recalculate ${analysisStatus.needsRecalculation || busy ? "needs-recalculation" : "up-to-date"}`}
+            disabled={busy || !analysisStatus.canRecalculate}
+            onClick={() => void recalculate(analysisStatus.useAllHistory)}
+          >
+            {busy ? "Recalculating…" : analysisStatus.needsRecalculation
+              ? "Recalculate — needed" : "Recalculate — up to date"}
+          </button>
+          <label className="prediction-option">
+            <input
+              type="checkbox"
+              checked={analysisStatus.useAllHistory}
+              disabled={busy || !analysisStatus.canRecalculate}
+              onChange={(event) => void recalculate(event.target.checked)}
+            />
+            Use all available history for training/backtesting
+          </label>
+        </div>
+        {busy && (
+          <div className="recalculation-progress">
+            <label htmlFor="recalculation-progress">
+              {analysisStatus.progressStage} — {analysisStatus.progressPercent}%
+            </label>
+            <progress
+              id="recalculation-progress"
+              max={100}
+              value={analysisStatus.progressPercent}
+              aria-label="Recalculation progress"
+            />
+          </div>
+        )}
+        <p className="muted" role="status">
+          {!analysisStatus.canRecalculate
+            ? "More historical draws are needed before analysis is available."
+            : analysisStatus.needsRecalculation
+              ? `Recalculation required. ${analysisStatus.drawCount} draws available; ${analysisStatus.analyzedDrawCount} in the last analysis. Previous analysis remains visible; new predictions are blocked.`
+              : `Analysis is current for ${analysisStatus.analyzedDrawCount} draws.`}
+          {" "}The option defaults off (up to 1,000 evaluation draws). On uses all
+          history after warmup and may take considerably longer. Features always use full history.
+        </p>
+      </section>
+
       <section>
         <div className="hero">
           <div className="hero-stats">
             <div className="stat">
-              <div className="stat-value">{stats.drawCount}</div>
+              <div className="stat-value">{draws.total}</div>
               <div className="stat-label">Historical draws</div>
               <div className="stat-sub">
-                {lottery.name} · numbers 1–{stats.poolSize}
-                {stats.poolChangeDrawNumber != null &&
-                  `, enlarged from 1–49 at draw ${stats.poolChangeDrawNumber}`}
+                {lottery.name} · numbers 1–{lottery.mainPoolSize}
               </div>
             </div>
           </div>
@@ -169,16 +264,16 @@ export default function Dashboard({
 
         <p className="label">
           Latest result
-          {stats.latestDraw && (
+          {latestDraw && (
             <>
               {" "}
-              <strong>on {stats.latestDraw.date}</strong>
+              <strong>on {latestDraw.date}</strong>
             </>
           )}
         </p>
-        {stats.latestRounds.length > 0 ? (
+        {latestRounds.length > 0 ? (
           <div className="latest-rounds">
-            {stats.latestRounds.map((round, index) => (
+            {latestRounds.map((round, index) => (
               <div className="latest-round" key={round.id}>
                 <span className="round-label">Round {index + 1}</span>
                 <Balls numbers={round.numbers} />
@@ -216,23 +311,14 @@ export default function Dashboard({
         )}
         {backtest && (
           <p className="muted">
-            Any single line has a {oneIn(backtest.randomFourPlusProbability)}{" "}
-            chance of 4+ matches per round and averages{" "}
+            Any single line has a {oneIn(backtest.randomThreePlusProbability)}{" "}
+            chance of 3+ matches per round and averages{" "}
             {backtest.randomExpectedMatches.toFixed(2)} matches; no choice of
-            numbers changes that in a fair draw. Only playing more
-            non-overlapping lines raises the odds — use the portfolio below.
-            With K={portfolioSize} line{portfolioSize === 1 ? "" : "s"} sharing
-            at most one ball, the best any method can do is{" "}
-            {oneIn(
-              1 -
-                Math.pow(
-                  1 - portfolioSize * backtest.randomFourPlusProbability,
-                  lottery.roundCount,
-                ),
-            )}{" "}
-            per draw night ({lottery.roundCount} round
-            {lottery.roundCount === 1 ? "" : "s"}); the portfolio builder
-            reaches that ceiling exactly.
+            numbers changes that in a fair independent draw. More distinct lines
+            can improve coverage, at greater cost. Even disjoint lines can both
+            match three numbers in the same six-ball draw, so portfolio odds are
+            below K times single-line odds; they are counted exactly over every
+            possible draw.
           </p>
         )}
 
@@ -261,13 +347,13 @@ export default function Dashboard({
               }
             />
           </label>
-          <button onClick={generate} disabled={generating}>
+          <button onClick={generate} disabled={generating || predictionBlocked}>
             {generating ? "Generating…" : "Generate Prediction"}
           </button>
           <button
             className="secondary"
             onClick={generatePortfolio}
-            disabled={portfolioLoading}
+            disabled={portfolioLoading || predictionBlocked}
           >
             {portfolioLoading
               ? "Generating…"
@@ -293,37 +379,41 @@ export default function Dashboard({
                 share at most {portfolio.maxPairwiseOverlap} ball
                 {portfolio.maxPairwiseOverlap === 1 ? "" : "s"}
                 {portfolio.probabilityIsExact
-                  ? ", so no single draw can pay two lines and the portfolio reaches the theoretical maximum K × single-line odds exactly."
-                  : " (pool nearly saturated; odds below are a tight lower bound)."}
+                  ? ". Odds below are exact for this portfolio."
+                  : ". Odds below are reproducible Monte Carlo estimates."}
               </p>
               <p className="verdict compact">
-                Chance of at least one line matching 4+ main numbers:{" "}
+                Chance of at least one line matching 3+ main numbers:{" "}
                 <strong>
-                  {formatPct(portfolio.anyRoundFourPlusProbability)}
+                  {formatPct(portfolio.anyRoundThreePlusProbability)}
                 </strong>{" "}
-                ({oneIn(portfolio.anyRoundFourPlusProbability)}) across{" "}
+                ({oneIn(portfolio.anyRoundThreePlusProbability)}) across{" "}
                 {portfolio.roundCount} round
                 {portfolio.roundCount === 1 ? "" : "s"};{" "}
-                {formatPct(portfolio.portfolioFourPlusProbability)} per round.
+                {formatPct(portfolio.portfolioThreePlusProbability)} per round.
                 Single line:{" "}
-                {formatPct(portfolio.singleLineFourPlusProbability)} per round (
-                {oneIn(portfolio.singleLineFourPlusProbability)}).
+                {formatPct(portfolio.singleLineThreePlusProbability)} per round (
+                {oneIn(portfolio.singleLineThreePlusProbability)}).
                 {portfolio.simulation &&
-                  ` Monte Carlo check: ${formatPct(portfolio.simulation.probability)} (95% CI ${formatPct(portfolio.simulation.ciLow)}–${formatPct(portfolio.simulation.ciHigh)}, ${portfolio.simulation.trials.toLocaleString()} draws); ${portfolio.lineCount} random distinct lines: ${formatPct(portfolio.simulation.randomDistinctProbability)}.`}
+                  (portfolio.simulation.exhaustive
+                    ? ` Counted over all ${portfolio.simulation.trials.toLocaleString()} possible draws.`
+                    : ` Monte Carlo check: ${formatPct(portfolio.simulation.probability)} (95% CI ${formatPct(portfolio.simulation.ciLow)}–${formatPct(portfolio.simulation.ciHigh)}, ${portfolio.simulation.trials.toLocaleString()} draws).`)}
+                {portfolio.simulation?.randomDistinctProbability != null &&
+                  ` ${portfolio.lineCount} random distinct lines: ${formatPct(portfolio.simulation.randomDistinctProbability)}.`}
               </p>
               {portfolio.bestMatches != null && (
                 <p
-                  className={`verdict compact${portfolio.bestMatches >= 4 ? " hit" : ""}`}
+                  className={`verdict compact${portfolio.bestMatches >= 3 ? " hit" : ""}`}
                 >
                   Result: best line #{portfolio.bestMatchesRank} matched{" "}
                   {portfolio.bestMatches} in round {portfolio.bestMatchesRound}
-                  {portfolio.bestMatches >= 4
-                    ? " — 4+ hit."
-                    : " — no 4+ hit this draw."}
+                  {portfolio.bestMatches >= 3
+                    ? " — 3+ hit."
+                    : " — no 3+ hit this draw."}
                 </p>
               )}
             </div>
-            <button onClick={loadBestOf} disabled={bestLoading}>
+            <button onClick={loadBestOf} disabled={bestLoading || predictionBlocked}>
               {bestLoading ? "Computing…" : "Show Consensus"}
             </button>
           </div>
@@ -332,11 +422,11 @@ export default function Dashboard({
             <thead>
               <tr>
                 <th>
-                  Target chance of a 4+ match on one draw night (
+                  Target chance of a 3+ match on one draw night (
                   {portfolio.roundCount} round
                   {portfolio.roundCount === 1 ? "" : "s"})
                 </th>
-                <th>Lines needed</th>
+                <th>Minimum possible lines (bound only)</th>
               </tr>
             </thead>
             <tbody>
@@ -346,7 +436,7 @@ export default function Dashboard({
                   <td>
                     {linesForTarget(
                       target,
-                      portfolio.singleLineFourPlusProbability,
+                      portfolio.singleLineThreePlusProbability,
                       portfolio.roundCount,
                     ).toLocaleString()}
                   </td>
@@ -354,6 +444,10 @@ export default function Dashboard({
               ))}
             </tbody>
           </table>
+          <p className="muted">
+            These minimum counts do not guarantee the target chance. Use the
+            portfolio chance reported above for the lines actually played.
+          </p>
 
           {bestOf && (
             <div className="best-of-card">
@@ -401,7 +495,7 @@ export default function Dashboard({
                 {line.prediction?.evaluations.map((evaluation) => (
                   <span
                     key={evaluation.evaluatedDrawId}
-                    className={`line-score${evaluation.matches >= 4 ? " hit" : ""}`}
+                    className={`line-score${evaluation.matches >= 3 ? " hit" : ""}`}
                     title={`Round ${evaluation.round}: ${evaluation.actualNumbers.join(" ")}`}
                   >
                     R{evaluation.round}: {evaluation.matches}
@@ -471,8 +565,9 @@ export default function Dashboard({
         <section>
           <h2>Backtesting results</h2>
           <p className="muted">
-            Walk-forward over the last {backtest.evaluatedDraws} draws: each
-            historical prediction used only draws before its target. Active
+            Results cover the last {backtest.evaluatedDraws} chronological holdout
+            draws. Genetic training and strategy selection used earlier data;
+            each holdout prediction used only data before its target. Active
             strategy: <strong>{backtest.activeStrategyName}</strong>.
           </p>
           <table>
@@ -485,8 +580,8 @@ export default function Dashboard({
                 <th>1 match</th>
                 <th>2 match</th>
                 <th>3+ match</th>
-                <th>4+ hits</th>
-                <th>4+ rate</th>
+                <th>3+ hits</th>
+                <th>3+ rate</th>
               </tr>
             </thead>
             <tbody>
@@ -503,11 +598,11 @@ export default function Dashboard({
                   <td>{s.pct1}%</td>
                   <td>{s.pct2}%</td>
                   <td>{s.pct3Plus}%</td>
-                  <td>{s.fourPlusHits}</td>
+                  <td>{s.threePlusHits}</td>
                   <td
-                    title={`95% CI ${formatPct(s.fourPlusCiLow)}-${formatPct(s.fourPlusCiHigh)}`}
+                    title={`95% CI ${formatPct(s.threePlusCiLow)}-${formatPct(s.threePlusCiHigh)}`}
                   >
-                    {formatPct(s.fourPlusRate)}
+                    {formatPct(s.threePlusRate)}
                   </td>
                 </tr>
               ))}
@@ -519,16 +614,16 @@ export default function Dashboard({
                 <td>{backtest.randomPct1}%</td>
                 <td>{backtest.randomPct2}%</td>
                 <td>{backtest.randomPct3Plus}%</td>
-                <td>{backtest.randomExpectedFourPlusHits.toFixed(3)} exp.</td>
-                <td>{formatPct(backtest.randomFourPlusProbability)}</td>
+                <td>{backtest.randomExpectedThreePlusHits.toFixed(3)} exp.</td>
+                <td>{formatPct(backtest.randomThreePlusProbability)}</td>
               </tr>
               <tr className="baseline">
                 <td>random baseline (theoretical)</td>
                 <td>{backtest.randomExpectedMatches.toFixed(4)}</td>
                 <td colSpan={7} className="muted">
-                  exact single-line random 4+ probability:{" "}
-                  {formatPct(backtest.randomFourPlusProbability)}; expected 4+
-                  hits: {backtest.randomExpectedFourPlusHits.toFixed(4)}
+                  exact single-line random 3+ probability:{" "}
+                  {formatPct(backtest.randomThreePlusProbability)}; expected 3+
+                  hits: {backtest.randomExpectedThreePlusHits.toFixed(4)}
                 </td>
               </tr>
             </tbody>
@@ -546,11 +641,11 @@ export default function Dashboard({
             {learning.refreshedUtc
               ? `, refreshed ${learning.refreshedUtc.replace("T", " ").slice(0, 16)} UTC`
               : ""}
-            : each new draw triggers one genetic-optimizer generation — elite
-            weight sets are mutated, crossed over, and challenged by random
-            immigrants, all judged by the same walk-forward backtest. An online
-            hedge ensemble (multiplicative weights) blends every strategy and
-            competes too. Active strategy:{" "}
+            : each analysis replays training from clean built-in seeds using
+            only pre-holdout draws. One generation of mutations, crossovers and
+            random candidates competes on three-plus hits, with average matches
+            as a tie-breaker. Saved winners are for reporting, not reused as
+            training seeds. An online hedge ensemble also competes. Active strategy:{" "}
             <strong>{learning.activeStrategyName}</strong>
             {learning.activeIsLearned && (
               <span className="badge">Learned</span>
@@ -571,7 +666,7 @@ export default function Dashboard({
               <h3>Hedge ensemble weights</h3>
               <p className="muted">
                 Learned online during the walk-forward run — strategies that
-                matched more get exponentially more say in the blended
+                achieved more three-plus hits get exponentially more say in the blended
                 prediction.
               </p>
               <table>
@@ -599,8 +694,8 @@ export default function Dashboard({
                 <tr>
                   <th>Learned strategy</th>
                   <th>Generation</th>
-                  <th>Avg Matches</th>
-                  <th>Recent Avg</th>
+                  <th>Selection Avg Matches</th>
+                  <th>Selection Recent Avg</th>
                   <th>Discovered (UTC)</th>
                 </tr>
               </thead>
@@ -618,8 +713,8 @@ export default function Dashboard({
             </table>
           ) : (
             <p className="muted">
-              No learned strategy currently beats the hand-written ones — the
-              expected state for a fair lottery.
+              No genetic candidate currently beats the built-in ones on the
+              selection data.
             </p>
           )}
 

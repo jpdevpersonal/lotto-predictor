@@ -68,7 +68,8 @@ public class StatisticsService(
         var report = snapshot.Backtest;
 
         var strategies = report.Strategies
-            .OrderByDescending(s => s.RecencyWeightedAvg)
+            .OrderByDescending(s => s.ThreePlusRate)
+            .ThenByDescending(s => s.AvgMatches)
             .Select(s => ToDto(s, s.Strategy.Name == report.Best.Strategy.Name))
             .ToList();
 
@@ -84,8 +85,8 @@ public class StatisticsService(
             Pct(randomSim.MatchCounts, 1, randomSim.Evaluated),
             Pct(randomSim.MatchCounts, 2, randomSim.Evaluated),
             PctAtLeast(randomSim.MatchCounts, 3, randomSim.Evaluated),
-            Math.Round(report.RandomFourPlusProbability, 8),
-            Math.Round(report.RandomExpectedFourPlusHits, 4),
+            Math.Round(report.RandomThreePlusProbability, 8),
+            Math.Round(report.RandomExpectedThreePlusHits, 4),
             report.Verdict);
     }
 
@@ -100,10 +101,10 @@ public class StatisticsService(
         Pct(s.MatchCounts, 1, s.Evaluated),
         Pct(s.MatchCounts, 2, s.Evaluated),
         PctAtLeast(s.MatchCounts, 3, s.Evaluated),
-        s.FourPlusHits,
-        Math.Round(s.FourPlusRate, 8),
-        Math.Round(s.FourPlusCiLow, 8),
-        Math.Round(s.FourPlusCiHigh, 8),
+        s.ThreePlusHits,
+        Math.Round(s.ThreePlusRate, 8),
+        Math.Round(s.ThreePlusCiLow, 8),
+        Math.Round(s.ThreePlusCiHigh, 8),
         isBest,
         s.Strategy.Name.StartsWith("learned-") || s.Strategy.Name == Backtester.EnsembleName);
 

@@ -14,7 +14,7 @@ public sealed record ScoringStrategy(
     double WBias = 0.0, // weight on the Bayesian bias z-score (physical-bias detector)
     double WBonus = 0.0) // weight on the bonus-ball appearance rate
 {
-    public string Version => $"v3/{Name}";
+    public string Version => $"v4-three-plus/{Name}";
 
     public string Describe() =>
         $"long-term={WLongTerm:0.##}, recent={WRecent:0.##}, gap={WGap:0.##}, momentum={WMomentum:0.##}, " +

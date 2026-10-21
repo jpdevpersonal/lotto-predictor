@@ -191,10 +191,14 @@ public class EuroMillionsTests
             var predictions = new PredictionService(factory, analysis);
 
             selection.CurrentProfile = LotteryProfile.UkLotto;
+            await analysis.RecalculateAsync();
             var ukPrediction = await predictions.GenerateAsync();
             var ukSnapshot = await analysis.GetSnapshotAsync();
 
             selection.CurrentProfile = LotteryProfile.EuroMillions;
+            Assert.True((await analysis.GetStatusAsync()).NeedsRecalculation);
+            Assert.False((await analysis.GetStatusAsync()).UseAllHistory);
+            await analysis.RecalculateAsync(useAllHistory: true);
             var euroPrediction = await predictions.GenerateAsync();
             var euroSnapshot = await analysis.GetSnapshotAsync();
 
@@ -209,6 +213,14 @@ public class EuroMillionsTests
 
             await using var euroDb = await factory.CreateDbContextAsync();
             Assert.Single(euroDb.Predictions);
+            selection.CurrentProfile = LotteryProfile.UkLotto;
+            Assert.False((await analysis.GetStatusAsync()).NeedsRecalculation);
+            Assert.False((await analysis.GetStatusAsync()).UseAllHistory);
+            analysis.Invalidate();
+            Assert.True((await analysis.GetStatusAsync()).NeedsRecalculation);
+            selection.CurrentProfile = LotteryProfile.EuroMillions;
+            Assert.False((await analysis.GetStatusAsync()).NeedsRecalculation);
+            Assert.True((await analysis.GetStatusAsync()).UseAllHistory);
             selection.CurrentProfile = LotteryProfile.UkLotto;
             await using var ukDb = await factory.CreateDbContextAsync();
             Assert.Single(ukDb.Predictions);
@@ -284,7 +296,15 @@ public class EuroMillionsTests
 
     private sealed class NoOpAnalysisService : IAnalysisService
     {
-        public Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default) =>
+        public Task<AnalysisSnapshot> GetSnapshotAsync(CancellationToken ct = default, bool requireCurrent = false) =>
+            throw new NotSupportedException();
+
+        public AnalysisSnapshot? GetCachedSnapshot() => null;
+
+        public Task<LottoPredictor.Core.Dtos.AnalysisStatusDto> GetStatusAsync(CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<AnalysisSnapshot> RecalculateAsync(bool useAllHistory = false, CancellationToken ct = default) =>
             throw new NotSupportedException();
 
         public void Invalidate()

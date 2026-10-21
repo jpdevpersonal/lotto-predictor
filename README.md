@@ -2,10 +2,11 @@
 
 A local web application for UK National Lottery and EuroMillions draw histories. It computes statistical
 features, runs walk-forward backtesting over hand-written and machine-learned scoring strategies,
-and generates a ranked prediction from the best currently-validated strategy. The engine **learns**:
-each new draw triggers a genetic-optimizer generation and an online hedge ensemble re-weighting —
-while honestly reporting whether anything actually beats random selection (on current data it does
-not, which is the expected outcome for a fair lottery).
+and generates a ranked prediction targeting **at least three main-number matches on one line**.
+Each analysis replays training from clean seeds and evaluates a later chronological holdout.
+Analysis is manual for UK Lotto, EuroMillions and Set For Life: use **Recalculate** on the dashboard.
+This objective gives more feedback than four-plus, but does not create predictive information:
+fair independent draws give every single line the same odds.
 
 ## Run it
 
@@ -72,6 +73,32 @@ dotnet test
 
 ## How prediction works
 
+### Manual recalculation
+
+- Adding or correcting results saves and evaluates them immediately, but does not rerun analysis.
+  The last analysis stays visible. The **Recalculate** button is **red** when analysis is missing
+  or stale and **green** when current. Text labels convey the status without relying on colour.
+  New predictions, portfolios and consensus lines are blocked until recalculation succeeds.
+- **Use all available history for training/backtesting** defaults off independently per lottery.
+  Off retains the usual 1,000-draw evaluation window; on evaluates all available history after
+  the 150-draw warmup. Changing the checkbox immediately requests recalculation.
+  Feature calculations already use full history and are unchanged. Full-history backtests can
+  take considerably longer. Hit tests account for different random probabilities across pool eras.
+- Status is refreshed on entering the dashboard, window focus, and every 15 seconds without
+  recalculating. While calculating, status polls every second and a progress bar reports
+  training/validation draw completion and the current stage. Percentages allocate 5% to
+  preparation, 25% to training, 65% to validation and 5% to saving; they are not time estimates.
+  Status is refreshed without
+  recalculating. Results added during a calculation leave its result marked stale.
+- Analysis snapshots and options are held in memory. Restarting the API resets the option to off
+  and requires manual recalculation; stored draw/prediction histories remain intact. No startup
+  backtest runs automatically.
+
+API: `GET /api/analysis/status` reads the selected lottery's status;
+`POST /api/analysis/recalculate` accepts `{"useAllHistory": false}` (or `true`) and requires the
+usual mutation key. All games use `X-Lottery`. Missing/stale analysis blocks generation with
+HTTP 409 Problem Details. See [Analysis.http](backend/LottoPredictor.Api/Analysis.http).
+
 1. `FeatureCalculator` computes per-number features (era-aware frequency rate, counts over the
    last 10/25/50/100 draws, draws since last seen, average gap, gap ratio, recent-vs-long-term
    ratio, positional counts, and a **Bayesian bias z-score** of observed appearances vs a
@@ -79,36 +106,72 @@ dotnet test
    distributions (sum, range, odd/even, consecutive numbers, low/high split) and a **chi-square
    uniformity test** over the current era — always from a strict prefix of draws.
 2. `PredictionEngine` z-scores the features and combines them with a strategy's weights
-   (long-term, recent, gap, momentum, bias), then searches all 6-number combinations of the top
-   14 candidates, adding a pair-synergy bonus and a soft typicality penalty (extreme sum /
+   (long-term, recent, gap, momentum, bias, bonus), then searches combinations of the top
+   18 candidates, adding a pair-synergy bonus and a soft typicality penalty (extreme sum /
    odd-even balance / range / clustering are penalised, never excluded).
-3. `Backtester` runs walk-forward validation: for each of the last 200 draws it predicts using
+3. `Backtester` runs walk-forward validation: for each of the last 1,000 draws (or available history
+   after 150 warmup draws) it predicts using
    only earlier draws and records matches, for every candidate strategy, for an **online hedge
-   ensemble**, and for a seeded random baseline. The strategy (or ensemble) with the best
-   **recency-weighted** walk-forward average (exponential decay, half-life 50 draws) becomes the
-   active strategy.
+   ensemble**, and for a seeded random baseline. Selection ranks three-plus hit rate first,
+   then average matches, using only the earlier two-thirds; displayed results use the later
+   one-third. Recency-weighted averages remain secondary diagnostics.
 4. The verdict compares the strategy selected on earlier walk-forward draws against the untouched
-  chronological holdout using an **exact one-sided binomial test** for the four-plus objective,
+  chronological holdout using an **exact one-sided binomial test** for the three-plus objective,
   while still reporting average matches against the analytic random expectation (36/59 ≈ 0.61
-  matches). It states plainly when the observed sparse-hit rate is within statistical noise.
+  matches). Random three-plus odds are approximately 1 in 92 for UK Lotto. The verdict warns
+  when fewer than ten random hits are expected on the holdout. Longer windows still do not
+  guarantee sufficient statistical power. A calibrated fixed-size-set log score versus uniform
+  sampling without replacement, and average matches, provide denser secondary feedback.
 
 ### How learning works
 
-- **Genetic optimizer** (`StrategyOptimizer`): every analysis rebuild is one generation. Elite
-  strategies are mutated with an annealed step size, pairs of parents are crossed over, and
-  random immigrants keep diversity. All candidates are judged by the same leak-free walk-forward
-  backtest; the top survivors are persisted to the `LearnedStrategies` table so learning
-  accumulates across restarts and new draws.
+- **Genetic optimizer** (`StrategyOptimizer`): each rebuild first ranks built-in seeds on a
+  training prefix ending before the final holdout, then generates one deterministic generation.
+  Candidates compete on selection-period three-plus hits with average matches as tie-breaker.
+  Selection survivors are persisted for reporting only. Previously saved winners are never
+  reused as seeds: they may already have seen today's historical holdout in earlier rebuilds.
+  Repeated checks on overlapping historical windows remain exploratory; confirm any apparent
+  advantage using predictions recorded before genuinely future draws.
 - **Hedge ensemble** (`hedge-ensemble`): inside the backtest, every strategy's per-number scores
-  are blended using multiplicative weights updated draw-by-draw (`w ×= e^(0.1·matches)`), so
-  strategies that match more get exponentially more say. This algorithm has provably near-optimal
-  regret vs the best single strategy in hindsight, and it competes as a candidate itself.
+  are blended using multiplicative weights updated after each draw (`w ×= e^(0.1·I(matches≥3))`).
+  Its prediction always uses past weights only; it competes as a predefined online algorithm.
 - **Bias detection**: the per-number bias z-score and the `bias-detector` strategy target the only
   edge that could really exist — a physically biased machine or ball set. The chi-square
   uniformity verdict on the dashboard reports whether any such bias is measurable (currently:
   none, p ≈ 0.98).
 - **Performance registry**: every rebuild logs each strategy's results to
   `StrategyPerformanceLogs`, so improvement (or the honest lack of it) is auditable over time.
+
+### Three-plus portfolios and API changes
+
+The builder first greedily reduces pairwise overlap of three-plus hit events, then a seeded local
+search swaps single balls to reduce the summed pairwise loss further. The refined portfolio is
+kept only when its exact three-plus chance is higher. This improves coverage but does not prove
+the portfolio is globally optimal. Even two disjoint six-number lines can both match three
+numbers in one draw. Portfolio odds are **exact**: every possible draw (45,057,474 for UK Lotto)
+is counted using bit-sliced per-line match counters, typically in well under a second, and the
+same exact count is shown for an equal number of random distinct lines for comparison.
+Multi-round odds assume independent rounds. Minimum line counts derived from the union bound are
+necessary lower bounds, not guarantees of achieving a target chance. Bonus balls and Lucky Stars
+are outside this objective.
+
+Measured on UK Lotto (exact chance of at least one 3+ line per round; random = same number of
+random distinct lines):
+
+| Lines K | Random lines | Previous builder | Current builder | K × single-line odds (upper bound) |
+|---|---|---|---|---|
+| 10 | 10.50% | 10.78% | 10.81% | 10.86% |
+| 20 | 19.34% | 20.86% | 20.91% | 21.73% |
+| 30 | 27.68% | 30.25% | 30.30% | 32.59% |
+| 50 | 41.78% | 47.02% | 47.07% | 54.32% |
+
+The gains come only from line overlap, not from forecasting numbers: every individual line still
+has the same 1 in 92 chance of 3+ matches.
+
+API objective fields now use `ThreePlus` / `threePlus` instead of `FourPlus` / `fourPlus`;
+`minimumLinesForEvenOdds` replaces `linesForEvenOdds`. New predictions use model version
+`v4-three-plus`. Existing draws, predictions and evaluations remain intact; saved portfolio odds
+are recalculated for the new objective. Old performance logs remain historical/exploratory.
 
 For UK Lotto, the add-result screen accepts two rounds of six numbers in one submission. They are validated and
 stored atomically as consecutive draw events with the same draw number and date. Both rounds feed
