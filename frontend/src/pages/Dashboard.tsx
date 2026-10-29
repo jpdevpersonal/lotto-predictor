@@ -36,6 +36,32 @@ function Balls({
   );
 }
 
+function SectionHead({
+  step,
+  title,
+  children,
+}: {
+  step?: number;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="section-head">
+      {step != null && <span className="section-step">{step}</span>}
+      <div>
+        <h2>{title}</h2>
+        <p className="section-desc">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+function HowToRead({ children, warn = false }: { children: React.ReactNode; warn?: boolean }) {
+  return (
+    <div className={`how-to-read${warn ? " callout-warn" : ""}`}>{children}</div>
+  );
+}
+
 function formatPct(value: number) {
   return `${(value * 100).toFixed(value < 0.001 ? 4 : 2)}%`;
 }
@@ -206,7 +232,21 @@ export default function Dashboard({
     <div>
       {error && <p className="error">{error}</p>}
 
+      <div className="page-intro">
+        <h2>{lottery.name} dashboard</h2>
+        <p>
+          Work top to bottom: refresh the analysis, generate your numbers, then
+          scroll down to see how the model is performing against pure chance.
+        </p>
+      </div>
+
       <section aria-label="Manual analysis controls">
+        <SectionHead step={1} title="Analysis engine">
+          Before any numbers can be predicted, the app studies every past draw,
+          tests several scoring strategies against history, and keeps the one
+          that performs best. Press <strong>Recalculate</strong> after adding new
+          results so predictions use the latest data.
+        </SectionHead>
         <div className="actions">
           <button
             className={`recalculate ${analysisStatus.needsRecalculation || busy ? "needs-recalculation" : "up-to-date"}`}
@@ -251,16 +291,38 @@ export default function Dashboard({
       </section>
 
       <section>
-        <div className="hero">
-          <div className="hero-stats">
-            <div className="stat">
-              <div className="stat-value">{draws.total}</div>
-              <div className="stat-label">Historical draws</div>
-              <div className="stat-sub">
-                {lottery.name} · numbers 1–{lottery.mainPoolSize}
-              </div>
+        <SectionHead step={2} title="Latest draw and your prediction">
+          See the most recent official result, then generate numbers from the
+          best-performing strategy. <strong>Generate Prediction</strong> gives a
+          single line; <strong>Play K Lines</strong> builds several distinct
+          lines that overlap as little as possible to widen coverage.
+        </SectionHead>
+
+        <div className="stat-grid">
+          <div className="stat-tile">
+            <div className="stat-value">{draws.total.toLocaleString()}</div>
+            <div className="stat-label">Historical draws</div>
+            <div className="stat-sub">
+              {lottery.name} · numbers 1–{lottery.mainPoolSize}
             </div>
           </div>
+          <div className="stat-tile">
+            <div className="stat-value">
+              <span className={`status-dot${analysisStatus.needsRecalculation ? " stale" : ""}`} />
+              {analysisStatus.needsRecalculation ? "Stale" : "Current"}
+            </div>
+            <div className="stat-label">Analysis status</div>
+            <div className="stat-sub">
+              {analysisStatus.analyzedDrawCount.toLocaleString()} draws analysed
+            </div>
+          </div>
+          {backtest && (
+            <div className="stat-tile">
+              <div className="stat-value">{backtest.activeStrategyName}</div>
+              <div className="stat-label">Active strategy</div>
+              <div className="stat-sub">Chosen by backtesting</div>
+            </div>
+          )}
         </div>
 
         <p className="label">
@@ -370,7 +432,12 @@ export default function Dashboard({
         <section>
           <div className="section-heading">
             <div>
-              <h2>Played portfolio</h2>
+              <h2>Your played lines (portfolio)</h2>
+              <p className="section-desc">
+                A portfolio is a set of K different lines played together. This
+                card shows how likely at least one line is to match 3+ numbers,
+                and how each line actually scored once the draw happened.
+              </p>
               <p className="muted">
                 <strong>K={portfolio.lineCount}</strong> lines from strategy{" "}
                 <strong>{portfolio.strategyName}</strong> after draw #
@@ -419,6 +486,13 @@ export default function Dashboard({
             </button>
           </div>
 
+          <HowToRead>
+            <strong>How to read this:</strong> the table below is a planning aid
+            — it shows the fewest lines you would need to even have a chance of
+            reaching a target probability. <strong>Show Consensus</strong> counts
+            which numbers recur most across your lines.
+          </HowToRead>
+          <div className="table-wrap">
           <table className="compact">
             <thead>
               <tr>
@@ -445,6 +519,7 @@ export default function Dashboard({
               ))}
             </tbody>
           </table>
+          </div>
           <p className="muted">
             These minimum counts do not guarantee the target chance. Use the
             portfolio chance reported above for the lines actually played.
@@ -524,11 +599,16 @@ export default function Dashboard({
 
       {prediction?.explanation && (
         <section>
-          <h2>Prediction explanation</h2>
+          <SectionHead step={3} title="Why these numbers? (prediction explanation)">
+            Every number in the pool gets a score from the active strategy. The
+            highest-scoring numbers became your prediction. This table shows
+            the raw evidence behind each score.
+          </SectionHead>
           <p className="muted">
             Model {prediction.modelVersion}; scores computed from the{" "}
             {prediction.cutoffSequence} draws available at prediction time.
           </p>
+          <div className="table-wrap">
           <table>
             <thead>
               <tr>
@@ -559,18 +639,32 @@ export default function Dashboard({
               ))}
             </tbody>
           </table>
+          </div>
+          <HowToRead>
+            <strong>Columns:</strong> <em>Overall frequency</em> — how often the
+            number has been drawn ever. <em>Recent frequency</em> — appearances in
+            the last 10/25/50/100 draws. <em>Draws since seen</em> — how long it
+            has been absent. <em>Average gap</em> — typical wait between
+            appearances. <em>Model score</em> — the combined result.
+          </HowToRead>
         </section>
       )}
 
       {backtest && (
         <section>
-          <h2>Backtesting results</h2>
+          <SectionHead step={4} title="Backtesting: does it beat chance?">
+            We replay history: for each past draw, every strategy predicts using
+            only the data that existed before that draw, then we count matches.
+            A strategy only matters if it clearly beats the random baselines at
+            the bottom of the table.
+          </SectionHead>
           <p className="muted">
             Results cover the last {backtest.evaluatedDraws} chronological holdout
             draws. Genetic training and strategy selection used earlier data;
             each holdout prediction used only data before its target. Active
             strategy: <strong>{backtest.activeStrategyName}</strong>.
           </p>
+          <div className="table-wrap">
           <table>
             <thead>
               <tr>
@@ -629,13 +723,26 @@ export default function Dashboard({
               </tr>
             </tbody>
           </table>
+          </div>
+          <HowToRead>
+            <strong>Reading the table:</strong> <em>Avg matches</em> is how many
+            numbers a strategy gets right per draw. <em>0/1/2/3+ match</em> show
+            how often each outcome happened. <em>3+ rate</em> is the share of
+            draws with at least three correct; hover for its 95% confidence
+            range. Green rows are the best strategy.
+          </HowToRead>
           <p className="verdict">{backtest.verdict}</p>
         </section>
       )}
 
       {learning && (
         <section>
-          <h2>Learning</h2>
+          <SectionHead step={5} title="Learning: how the model improves">
+            The app keeps evolving new strategies and tests them only on draws
+            that happen <em>after</em> they were created, so results can't be
+            flattered by hindsight. It also checks whether the draw itself shows
+            any measurable bias.
+          </SectionHead>
           <p className="muted">
             Generation <strong>{learning.generation}</strong> across{" "}
             <strong>{learning.analyzedDrawCount} draws</strong>
@@ -695,6 +802,7 @@ export default function Dashboard({
           )}
 
           {learning.learnedStrategies.length > 0 ? (
+            <div className="table-wrap">
             <table>
               <thead>
                 <tr>
@@ -721,6 +829,7 @@ export default function Dashboard({
                 ))}
               </tbody>
             </table>
+            </div>
           ) : (
             <p className="muted">
               No challengers yet. Recalculate to admit the first generation.
@@ -764,7 +873,12 @@ export default function Dashboard({
 
       {history.length > 0 && (
         <section>
-          <h2>Prediction history</h2>
+          <SectionHead step={6} title="Prediction history">
+            A permanent record of every prediction you have generated and how it
+            scored once the real draw arrived. “Pending” means the draw has not
+            happened (or been entered) yet.
+          </SectionHead>
+          <div className="table-wrap">
           <table>
             <thead>
               <tr>
@@ -827,6 +941,7 @@ export default function Dashboard({
               ))}
             </tbody>
           </table>
+          </div>
         </section>
       )}
     </div>
