@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { LotteryProfile } from "../types";
 
@@ -28,8 +28,33 @@ export default function AddResult({
       emptyValues(lottery.luckyStarCount),
     ),
   );
+  const [drawNumberEdited, setDrawNumberEdited] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .drawHistory(0, 10)
+      .then((history) => {
+        if (!active || history.items.length === 0) return;
+        const next = Math.max(...history.items.map((d) => d.drawNumber)) + 1;
+        setDrawNumber((current) => (current === "" ? String(next) : current));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const fullDate = date
+    ? new Date(`${date}T00:00:00`).toLocaleDateString("en-GB", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      })
+    : "";
 
   const setValue = (roundIndex: number, numberIndex: number, value: string) => {
     setRounds((current) =>
@@ -101,7 +126,11 @@ export default function AddResult({
 
   return (
     <section className="card-form">
-      <h2>Add New Results</h2>
+      <h2>Add new results</h2>
+      <p className="section-desc">
+        Enter the official numbers after each draw. This keeps the analysis
+        honest: the more real results the model has, the better it can test itself.
+      </p>
       <p className="muted">
         Enter {lottery.roundCount === 1 ? "the" : "both"} {lottery.name} round
         {lottery.roundCount === 1 ? "" : "s"}. Statistics, learning, and
@@ -110,21 +139,34 @@ export default function AddResult({
       <div className="rounds-input">
         <fieldset className="round-input">
           <legend>Draw Details</legend>
-          <div className="number-inputs">
-            <input
-              type="number"
-              min={1}
-              value={drawNumber}
-              aria-label="Draw number"
-              placeholder="Draw # (auto if blank)"
-              onChange={(event) => setDrawNumber(event.target.value)}
-            />
-            <input
-              type="date"
-              value={date}
-              aria-label="Draw date"
-              onChange={(event) => setDate(event.target.value)}
-            />
+          <div className="draw-details">
+            <label className="field">
+              <span>Draw number</span>
+              <input
+                type="number"
+                min={1}
+                value={drawNumber}
+                placeholder="Auto"
+                onChange={(event) => {
+                  setDrawNumber(event.target.value);
+                  setDrawNumberEdited(true);
+                }}
+              />
+              <small>
+                {drawNumberEdited
+                  ? "Manually set."
+                  : "Auto-set to the next draw; edit if needed."}
+              </small>
+            </label>
+            <label className="field">
+              <span>Draw date</span>
+              <input
+                type="date"
+                value={date}
+                onChange={(event) => setDate(event.target.value)}
+              />
+              <small>{fullDate}</small>
+            </label>
           </div>
         </fieldset>
         {rounds.map((round, roundIndex) => (
