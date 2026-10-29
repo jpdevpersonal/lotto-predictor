@@ -25,7 +25,7 @@ public class RealCsvIntegrationTests
         Assert.True(path is not null, "numbers.csv not found in any parent directory");
         using var reader = new StreamReader(path!);
         return new CsvImporter().Parse(reader)
-            .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(), d.Bonus))
+            .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(), d.Bonus, d.Machine, d.BallSet))
             .ToList();
     }
 
@@ -73,6 +73,12 @@ public class RealCsvIntegrationTests
 
         // Sum distribution should be broadly plausible for 6-of-59 (mean 180).
         Assert.InRange(fs.SumMean, 160, 200);
+
+        // Era-standardised FreqRateShrunk must not relegate all 50-59 expansion balls to the bottom half,
+        // and physical equipment metadata from numbers.csv must populate PhysicalAffinity.
+        var rankedByShrunkFreq = fs.Numbers.OrderByDescending(f => f.FreqRateShrunk).Select(f => f.Number).ToList();
+        Assert.Contains(rankedByShrunkFreq.Take(29), n => n >= 50);
+        Assert.Contains(fs.Numbers, f => Math.Abs(f.PhysicalAffinity) > 0.05);
     }
 
     [Fact]

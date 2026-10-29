@@ -73,6 +73,44 @@ public class LearningLoopTests
     }
 
     [Fact]
+    public void Online_model_with_ema_accumulators_adapts_to_late_regime_shift()
+    {
+        var rng = new Random(19);
+        var history = RandomHistory(450, 59, seed: 19);
+        // After 350 fair draws (beyond MaxAccumulatorWindow = 250), ball 23 becomes strongly biased.
+        for (int i = 350; i < history.Count; i++)
+        {
+            var set = new HashSet<int> { 23 };
+            while (set.Count < 6) set.Add(rng.Next(1, 60));
+            history[i] = Ev(i + 1, [.. set.OrderBy(x => x)]);
+        }
+
+        var model = TrainWalkForward(history, 50);
+        Assert.All(model.Accumulators, acc => Assert.True(acc < 1000, $"Accumulator grew unbounded: {acc}"));
+        var scores = PredictionEngine.ScoreNumbers(FeatureCalculator.Compute(history), model.ToStrategy());
+        var top3 = scores.OrderByDescending(kv => kv.Value).Take(3).Select(kv => kv.Key).ToList();
+        Assert.Contains(23, top3);
+    }
+
+    [Fact]
+    public void Multi_generation_prefix_evolution_is_deterministic_and_normalised()
+    {
+        var history = RandomHistory(240, 59, seed: 29);
+        var first = StrategyOptimizer.EvolveOnPrefix(
+            history, ScoringStrategy.Candidates, generation: 3, evalWindow: 40, warmup: 150);
+        var second = StrategyOptimizer.EvolveOnPrefix(
+            history, ScoringStrategy.Candidates, generation: 3, evalWindow: 40, warmup: 150);
+
+        Assert.Equal(first.Select(s => s.Describe()), second.Select(s => s.Describe()));
+        Assert.All(first, c =>
+        {
+            double sum = c.WLongTerm + c.WRecent + c.WGap + c.WMomentum + c.WBias + c.WBonus;
+            Assert.Equal(1.0, sum, 2);
+            Assert.StartsWith("learned-g3-", c.Name);
+        });
+    }
+
+    [Fact]
     public void Live_hedge_moves_weight_toward_the_rewarded_strategy_and_keeps_a_floor()
     {
         var rows = new List<HedgeWeightState>

@@ -35,6 +35,11 @@ public sealed class AnalysisSnapshot
         get => hedgeWeights ?? Backtest.HedgeWeights;
         init => hedgeWeights = value;
     }
+    /// <summary>Dedicated strategy learned specifically on the secondary/bonus pool (Lucky Stars / Life Ball)
+    /// when the lottery has a separate bonus pool.</summary>
+    public ScoringStrategy? ActiveBonusStrategy { get; init; }
+    /// <summary>Dedicated hedge weights learned on the secondary/bonus pool.</summary>
+    public IReadOnlyDictionary<string, double>? BonusHedgeWeights { get; init; }
     public SelectionDecision? Selection { get; init; }
     public int PoolSize => Features.Pool.PoolSize;
 }
@@ -184,7 +189,7 @@ public class AnalysisService : IAnalysisService
 
             var events = draws
                 .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(),
-                    lottery.BonusSharesMainPool ? d.Bonus : null))
+                    lottery.BonusSharesMainPool ? d.Bonus : null, d.Machine, d.BallSet))
                 .ToList();
 
             var features = FeatureCalculator.Compute(
@@ -192,7 +197,7 @@ public class AnalysisService : IAnalysisService
                 ruleEras: lottery.MainPoolRules);
             var luckyStarEvents = !lottery.BonusSharesMainPool
                 ? draws.Select(d => new DrawEvent(
-                    d.Sequence, d.DrawNumber, d.Date, d.BonusNumbers())).ToList()
+                    d.Sequence, d.DrawNumber, d.Date, d.BonusNumbers(), null, d.Machine, d.BallSet)).ToList()
                 : null;
             var luckyStarFeatures = luckyStarEvents is { Count: > 0 }
                 ? FeatureCalculator.Compute(luckyStarEvents, lottery.BonusPoolSize,
@@ -208,26 +213,28 @@ public class AnalysisService : IAnalysisService
                 drawCount, evalWindow, options.BacktestWarmup);
             IReadOnlyList<ScoringStrategy> seeds = ScoringStrategy.Candidates;
             ReportProgress(5, "Training strategies");
-            // Replay training from clean seeds. Saved winners may have seen today's historical
-            // holdout in an earlier rebuild, so they must never seed this validation.
+            // Multi-generation evolution strictly inside the training prefix (0..selectionCutoff).
+            // Saved winners in DB are never fed back in, preserving leak-free holdout guarantees.
+            IReadOnlyList<ScoringStrategy> newCandidates;
             if (selectionCutoff > options.BacktestWarmup + 2)
             {
-                var training = Backtester.Run(
-                    Backtester.Prefix(events, selectionCutoff), seeds,
-                    evalWindow, options.BacktestWarmup,
+                newCandidates = StrategyOptimizer.EvolveOnPrefix(
+                    Backtester.Prefix(events, selectionCutoff),
+                    seeds,
+                    generation,
+                    evalWindow,
+                    options.BacktestWarmup,
                     configuredPoolSize: lottery.MainPoolSize,
                     poolExpansionDate: lottery.MainPoolExpansionDate,
+                    ruleEras: lottery.MainPoolRules,
                     onProgress: (completed, total) =>
                         ReportProgress(5 + completed * 25 / total, "Training strategies"),
                     ct: ct);
-                seeds = training.Strategies
-                    .Where(r => r.Strategy.Name != Backtester.EnsembleName)
-                    .OrderByDescending(r => r.ThreePlusRate)
-                    .ThenByDescending(r => r.AvgMatches)
-                    .ThenBy(r => r.Strategy.Name)
-                    .Select(r => r.Strategy).ToList();
             }
-            var newCandidates = StrategyOptimizer.GenerateCandidates(seeds, generation);
+            else
+            {
+                newCandidates = StrategyOptimizer.GenerateCandidates(seeds, generation);
+            }
             ReportProgress(30, "Validating strategies");
 
             var allStrategies = ScoringStrategy.Candidates
@@ -244,14 +251,36 @@ public class AnalysisService : IAnalysisService
                 configuredPoolSize: lottery.MainPoolSize,
                 poolExpansionDate: lottery.MainPoolExpansionDate,
                 onProgress: (completed, total) =>
-                    ReportProgress(30 + completed * 65 / total, "Validating strategies"),
+                    ReportProgress(30 + completed * 60 / total, "Validating strategies"),
                 ct: ct,
                 onStep: (_, stepFeatures, target) =>
                 {
                     if (target.Sequence <= onlineThrough) return;
                     onlineModel.Update(stepFeatures, target.Numbers);
                     onlineThrough = target.Sequence;
-                });
+                },
+                ruleEras: lottery.MainPoolRules,
+                includeOnlineInHedge: true);
+
+            ScoringStrategy? activeBonusStrategy = null;
+            IReadOnlyDictionary<string, double>? bonusHedgeWeights = null;
+            if (luckyStarEvents is { Count: > 0 } &&
+                luckyStarEvents.Count > options.BacktestWarmup + 2 &&
+                luckyStarEvents[0].Numbers.Length > 0)
+            {
+                ReportProgress(92, "Validating bonus pool strategies");
+                int bonusEvalWindow = Math.Min(evalWindow, 250);
+                var bonusBacktest = Backtester.Run(
+                    luckyStarEvents,
+                    ScoringStrategy.Candidates,
+                    bonusEvalWindow,
+                    options.BacktestWarmup,
+                    configuredPoolSize: lottery.BonusPoolSize,
+                    ct: ct,
+                    ruleEras: lottery.BonusPoolRules);
+                activeBonusStrategy = bonusBacktest.Best.Strategy;
+                bonusHedgeWeights = bonusBacktest.HedgeWeights;
+            }
 
             ReportProgress(95, "Updating prospective learning");
             ShadowLedger.StoreOnlineModel(onlineModel, onlineState, onlineThrough);
@@ -286,6 +315,8 @@ public class AnalysisService : IAnalysisService
                 Lottery = lottery,
                 Backtest = backtest,
                 ActiveStrategy = activeStrategy,
+                ActiveBonusStrategy = activeBonusStrategy ?? activeStrategy,
+                BonusHedgeWeights = bonusHedgeWeights ?? hedgeWeights,
                 AllStrategies = allStrategies,
                 LearningGeneration = generation,
                 UseAllHistory = useAllHistory,
@@ -416,6 +447,7 @@ public class AnalysisService : IAnalysisService
             .Where(r => freshNames.Contains(r.Strategy.Name) && !knownNames.Contains(r.Strategy.Name))
             .OrderByDescending(r => r.ThreePlusRate)
             .ThenByDescending(r => r.AvgMatches)
+            .ThenByDescending(r => r.RecencyWeightedAvg)
             .ThenBy(r => r.Strategy.Name)
             .Take(Math.Min(room, admitTarget))
             .ToList();

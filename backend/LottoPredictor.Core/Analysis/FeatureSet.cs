@@ -49,6 +49,19 @@ public sealed class NumberFeatures
     /// era aware. Large |z| suggests physical bias; ~N(0,1) for a fair lottery.</summary>
     public double BiasZ { get; init; }
 
+    /// <summary>Multi-horizon exponentially weighted moving average rate (era-standardised).</summary>
+    public double EwmaRate { get; init; }
+
+    /// <summary>Empirical renewal hazard residual at the ball's current lag (DrawsSinceLast).</summary>
+    public double GapHazardZ { get; init; }
+
+    /// <summary>Shrunk z-score of appearances within the active Machine and BallSet regime.</summary>
+    public double PhysicalAffinity { get; init; }
+
+    /// <summary>Secondary structural signal (equipment affinity, slot concentration, and lag-1 repeat
+    /// propensity) used when a game has no main-pool bonus ball or blended alongside it.</summary>
+    public double SecondarySignal { get; init; }
+
     /// <summary>Appearances per sorted position (N1..N6).</summary>
     public int[] PositionCounts { get; init; } = new int[6];
 }
@@ -56,6 +69,8 @@ public sealed class NumberFeatures
 /// <summary>Full feature snapshot for a prefix of draws. Immutable once built.</summary>
 public sealed class FeatureSet
 {
+    private double[,]? pairSynergyCache;
+
     public required PoolInfo Pool { get; init; }
     public required int DrawCount { get; init; }
     public required int PickCount { get; init; }
@@ -89,25 +104,33 @@ public sealed class FeatureSet
 
     public NumberFeatures For(int number) => Numbers[number - 1];
 
-    /// <summary>Expected co-occurrence count of a pair under a uniform draw model, era aware.</summary>
+    /// <summary>Expected co-occurrence count of a pair under a uniform draw model, era aware
+    /// across any sequence of pool-size changes.</summary>
     public double ExpectedPairCount(int a, int b)
     {
-        int era2Start = Pool.Era2StartIndex;
         int eligibleFrom = Math.Max(Pool.EligibleFromIndex(a), Pool.EligibleFromIndex(b));
-        double expected = 0;
-        int era1Draws = Math.Max(0, Math.Min(era2Start, DrawCount) - eligibleFrom);
-        int era2Draws = Math.Max(0, DrawCount - Math.Max(era2Start, eligibleFrom));
         double pairNumerator = PickCount * (PickCount - 1.0);
-        if (Pool.PoolSize > 49 && PickCount == 6)
+        return pairNumerator * Pool.PairFactorBetween(eligibleFrom, DrawCount);
+    }
+
+    /// <summary>Cached pair synergy matrix for fast combination search.</summary>
+    public double[,] GetPairSynergyMatrix()
+    {
+        if (pairSynergyCache is not null) return pairSynergyCache;
+        int p = Pool.PoolSize;
+        var matrix = new double[p + 1, p + 1];
+        for (int a = 1; a <= p; a++)
         {
-            expected += era1Draws * pairNumerator / (49.0 * 48.0);
-            expected += era2Draws * pairNumerator / (Pool.PoolSize * (Pool.PoolSize - 1.0));
+            for (int b = a + 1; b <= p; b++)
+            {
+                double observed = PairCounts[a, b];
+                double expected = ExpectedPairCount(a, b);
+                double val = Math.Clamp((observed - expected) / Math.Sqrt(expected + 1.0), -2.0, 2.0);
+                matrix[a, b] = val;
+                matrix[b, a] = val;
+            }
         }
-        else
-        {
-            expected = (era1Draws + era2Draws) * pairNumerator /
-                (Pool.PoolSize * Math.Max(1.0, Pool.PoolSize - 1.0));
-        }
-        return expected;
+        pairSynergyCache = matrix;
+        return matrix;
     }
 }

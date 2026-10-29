@@ -64,7 +64,9 @@ public static class Backtester
         DateOnly? poolExpansionDate = null,
         Action<int, int>? onProgress = null,
         CancellationToken ct = default,
-        Action<int, FeatureSet, DrawEvent>? onStep = null)
+        Action<int, FeatureSet, DrawEvent>? onStep = null,
+        IReadOnlyList<PoolRule>? ruleEras = null,
+        bool includeOnlineInHedge = false)
     {
         if (draws.Count <= warmup + 2)
             throw new InvalidOperationException($"Need more than {warmup + 2} draws to backtest.");
@@ -77,12 +79,17 @@ public static class Backtester
             throw new InvalidOperationException("Need at least two evaluation draws to reserve a chronological holdout.");
 
         var matchLists = strategies.ToDictionary(s => s.Name, _ => new List<int>(evaluated));
+        var scoreZLists = strategies.ToDictionary(s => s.Name, _ => new List<double>(evaluated));
+        scoreZLists[EnsembleName] = new List<double>(evaluated);
         var ensembleMatches = new List<int>(evaluated);
         // Per step, per strategy: the score of every eligible ball and which balls were drawn,
         // kept so the information test can be run on whichever strategy is selected afterwards.
         var scoreSteps = strategies.ToDictionary(s => s.Name, _ => new List<InformationStep>(evaluated));
         scoreSteps[EnsembleName] = new List<InformationStep>(evaluated);
-        var hedge = strategies.ToDictionary(s => s.Name, _ => 1.0 / strategies.Count);
+        var hedge = strategies.ToDictionary(s => s.Name, _ => 1.0 / (strategies.Count + (includeOnlineInHedge ? 1 : 0)));
+        if (includeOnlineInHedge)
+            hedge[OnlineBallModel.StrategyName] = 1.0 / (strategies.Count + 1);
+        var walkForwardOnline = includeOnlineInHedge ? new OnlineBallModel() : null;
         var randomMatches = new List<int>(evaluated);
         var rng = new Random(randomSeed);
         var expectedMatches = new List<double>(evaluated);
@@ -94,44 +101,74 @@ public static class Backtester
             var prefix = new PrefixView(draws, i); // draws[0..i) only — the target draw is invisible
             var actual = draws[i].Numbers;
             var fs = FeatureCalculator.Compute(
-                prefix, configuredPoolSize, poolExpansionDate, draws[i].Date);
-            onStep?.Invoke(i, fs, draws[i]);
+                prefix, configuredPoolSize, poolExpansionDate, draws[i].Date, ruleEras, includeTriples: false);
+            var matrix = PredictionEngine.FeatureMatrix(fs);
             double stepThreePlus = ThreePlusProbability(fs.Pool.NextPoolSize, fs.PickCount);
 
-            var stepScores = new List<(ScoringStrategy Strategy, Dictionary<int, double> Scores, int Matches)>(strategies.Count);
+            var stepScores = new List<(ScoringStrategy Strategy, Dictionary<int, double> Scores, int Matches, double ScoreZ)>(strategies.Count + 1);
             foreach (var strategy in strategies)
             {
-                var scores = PredictionEngine.ScoreNumbers(fs, strategy);
+                var scores = PredictionEngine.ScoreNumbers(matrix, strategy);
                 var result = PredictionEngine.GenerateFromScores(fs, scores, strategy);
                 int m = CountMatches(result.Numbers, actual);
+                double sz = LearningSignals.ScoreZ(LearningSignals.Standardise(scores), actual);
                 matchLists[strategy.Name].Add(m);
-                stepScores.Add((strategy, scores, m));
+                scoreZLists[strategy.Name].Add(sz);
+                stepScores.Add((strategy, scores, m, sz));
                 scoreSteps[strategy.Name].Add(InformationStep.From(scores, actual));
             }
 
+            (ScoringStrategy Strategy, Dictionary<int, double> Scores, int Matches, double ScoreZ)? onlineStep = null;
+            if (walkForwardOnline is not null && !hedge.ContainsKey(OnlineBallModel.StrategyName) == false)
+            {
+                var onlineStrat = walkForwardOnline.ToStrategy();
+                var onlineScores = PredictionEngine.ScoreNumbers(matrix, onlineStrat);
+                var onlineResult = PredictionEngine.GenerateFromScores(fs, onlineScores, onlineStrat);
+                int om = CountMatches(onlineResult.Numbers, actual);
+                double osz = LearningSignals.ScoreZ(LearningSignals.Standardise(onlineScores), actual);
+                onlineStep = (onlineStrat, onlineScores, om, osz);
+            }
+
             // Hedge ensemble: predict with the weights learned from PAST draws only, then update.
-            var blended = PredictionEngine.BlendScores(
-                stepScores.Select(t => (t.Scores, hedge[t.Strategy.Name])));
-            double pairW = stepScores.Sum(t => hedge[t.Strategy.Name] * t.Strategy.PairWeight);
-            double penW = stepScores.Sum(t => hedge[t.Strategy.Name] * t.Strategy.PenaltyWeight);
+            var blendParts = stepScores.Select(t => (t.Scores, hedge[t.Strategy.Name])).ToList();
+            if (onlineStep is { } os)
+                blendParts.Add((os.Scores, hedge[OnlineBallModel.StrategyName]));
+            var blended = PredictionEngine.BlendScores(blendParts);
+            double pairW = stepScores.Sum(t => hedge[t.Strategy.Name] * t.Strategy.PairWeight) +
+                (onlineStep is { } os1 ? hedge[OnlineBallModel.StrategyName] * os1.Strategy.PairWeight : 0);
+            double penW = stepScores.Sum(t => hedge[t.Strategy.Name] * t.Strategy.PenaltyWeight) +
+                (onlineStep is { } os2 ? hedge[OnlineBallModel.StrategyName] * os2.Strategy.PenaltyWeight : 0);
             var ensemblePrediction = PredictionEngine.GenerateFromScores(
                 fs, blended, new ScoringStrategy(EnsembleName, 0, 0, 0, 0, pairW, penW));
             ensembleMatches.Add(CountMatches(ensemblePrediction.Numbers, actual));
+            scoreZLists[EnsembleName].Add(LearningSignals.ScoreZ(LearningSignals.Standardise(blended), actual));
             scoreSteps[EnsembleName].Add(InformationStep.From(blended, actual));
+
+            onStep?.Invoke(i, fs, draws[i]);
+            walkForwardOnline?.Update(matrix, actual);
 
             double norm = 0;
             foreach (var t in stepScores)
             {
-                double reward = LearningSignals.Reward(
-                    LearningSignals.ScoreZ(LearningSignals.Standardise(t.Scores), actual),
-                    t.Matches >= 3, stepThreePlus);
+                double reward = LearningSignals.Reward(t.ScoreZ, t.Matches >= 3, stepThreePlus);
                 hedge[t.Strategy.Name] *= Math.Exp(HedgeEta * reward);
                 norm += hedge[t.Strategy.Name];
             }
+            if (onlineStep is { } osUpdate)
+            {
+                double reward = LearningSignals.Reward(osUpdate.ScoreZ, osUpdate.Matches >= 3, stepThreePlus);
+                hedge[OnlineBallModel.StrategyName] *= Math.Exp(HedgeEta * reward);
+                norm += hedge[OnlineBallModel.StrategyName];
+            }
+            int totalHedgeCount = hedge.Count;
             if (norm <= 0 || double.IsNaN(norm) || double.IsInfinity(norm))
-                foreach (var s in strategies) hedge[s.Name] = 1.0 / strategies.Count;
+            {
+                foreach (var key in hedge.Keys.ToList()) hedge[key] = 1.0 / totalHedgeCount;
+            }
             else
-                foreach (var s in strategies) hedge[s.Name] /= norm;
+            {
+                foreach (var key in hedge.Keys.ToList()) hedge[key] /= norm;
+            }
 
             int pool = fs.Pool.NextPoolSize;
             int pickCount = fs.PickCount;
@@ -151,9 +188,17 @@ public static class Backtester
             new ScoringStrategy(EnsembleName, 0, 0, 0, 0, 0, 0),
             ensembleMatches.Take(selectionEvaluated).ToList()));
 
+        var selectionMeanScoreZ = scoreZLists.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value.Count >= selectionEvaluated && selectionEvaluated > 0
+                ? kv.Value.Take(selectionEvaluated).Average()
+                : 0.0);
+
         var selected = selectionResults
             .OrderByDescending(r => r.ThreePlusRate)
             .ThenByDescending(r => r.AvgMatches)
+            .ThenByDescending(r => r.RecencyWeightedAvg)
+            .ThenByDescending(r => selectionMeanScoreZ.GetValueOrDefault(r.Strategy.Name))
             .ThenBy(r => r.Strategy.Name)
             .First();
 
@@ -209,7 +254,7 @@ public static class Backtester
         if (randomExpectedThreePlusHits < 10)
             verdict += " Fewer than 10 random three-plus hits are expected on this holdout; precision is limited.";
 
-        var pool2 = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate);
+        var pool2 = PoolInfo.Detect(draws, configuredPoolSize, poolExpansionDate, ruleEras: ruleEras);
         return new BacktestReport
         {
             Strategies = results,

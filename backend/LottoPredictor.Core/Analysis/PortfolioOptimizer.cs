@@ -88,8 +88,22 @@ public static class PortfolioOptimizer
             int[]? best = null;
             double bestLoss = double.PositiveInfinity;
             double bestScore = double.NegativeInfinity;
+
+            // For the very first line, seed with the exact optimal combination from PredictionEngine
+            // so Line 1 benefits from full combination & 1-opt swap search (pair synergy + typicality).
+            if (selected.Count == 0)
+            {
+                var topLine = PredictionEngine.GenerateFromScores(fs, scores, strategy, excludedNumbers).Numbers;
+                if (!selectedKeys.Contains(LineKey(topLine)))
+                {
+                    best = topLine;
+                    bestLoss = packing.OverlapLoss(topLine, pairTerm);
+                    bestScore = LineScore(fs, topLine, scores, strategy);
+                }
+            }
+
             // Tier t admits lines sharing at most t balls with every earlier line.
-            for (int tier = 0; tier < pickCount && best is null; tier++)
+            for (int tier = 0; tier < pickCount && (best is null || selected.Count == 0 && tier == 0); tier++)
             {
                 for (int attempt = 0; attempt < ConstructionsPerLine; attempt++)
                 {
@@ -106,6 +120,7 @@ public static class PortfolioOptimizer
                         bestScore = score;
                     }
                 }
+                if (best is not null) break;
             }
 
             if (best is null)
@@ -124,13 +139,16 @@ public static class PortfolioOptimizer
         }
 
         var finalSets = selectedSets;
+        double initialTotalScore = selectedSets.Sum(line => LineScore(fs, line, scores, strategy));
         var coverage = Evaluate(finalSets, poolSize, pickCount, randomSeed);
         var refined = Refine(selectedSets, legalNumbers, pickCount, pairTerm,
-            new Random(randomSeed + 4057 + lineCount));
+            new Random(randomSeed + 4057 + lineCount), fs, scores, strategy);
         if (refined is not null)
         {
             var refinedCoverage = Evaluate(refined, poolSize, pickCount, randomSeed);
-            if (refinedCoverage.Hits > coverage.Hits)
+            double refinedTotalScore = refined.Sum(line => LineScore(fs, line, scores, strategy));
+            if (refinedCoverage.Hits > coverage.Hits ||
+                (refinedCoverage.Hits == coverage.Hits && refinedTotalScore > initialTotalScore + 1e-6))
             {
                 finalSets = refined;
                 coverage = refinedCoverage;
@@ -288,10 +306,18 @@ public static class PortfolioOptimizer
     }
 
     /// <summary>Seeded simulated annealing over single-ball swaps that minimises the summed
-    /// pairwise loss Σ P(both lines match 3+). Returns the lowest-loss portfolio seen, or null
-    /// when it is no better than the start. Duplicate lines and excluded balls are never produced.</summary>
+    /// pairwise loss Σ P(both lines match 3+), while lexicographically preferring higher model
+    /// LineScore on equal-loss swaps rather than drifting via a blind random walk. Duplicate lines
+    /// and excluded balls are never produced.</summary>
     private static List<int[]>? Refine(
-        IReadOnlyList<int[]> start, int[] legalNumbers, int pickCount, double[] pairTerm, Random rng)
+        IReadOnlyList<int[]> start,
+        int[] legalNumbers,
+        int pickCount,
+        double[] pairTerm,
+        Random rng,
+        FeatureSet fs,
+        Dictionary<int, double> scores,
+        ScoringStrategy strategy)
     {
         int k = start.Count;
         if (k < 2 || legalNumbers.Length <= pickCount) return null;
@@ -314,7 +340,16 @@ public static class PortfolioOptimizer
                 loss += pairTerm[shared];
             }
 
+        var lineScores = new double[k];
+        double totalScore = 0;
+        for (int i = 0; i < k; i++)
+        {
+            lineScores[i] = LineScore(fs, lines[i], scores, strategy);
+            totalScore += lineScores[i];
+        }
+
         double startLoss = loss, bestLoss = loss;
+        double startScore = totalScore, bestScore = totalScore;
         int[][]? best = null;
         double initialTemperature = 0;
         for (int s = 1; s < pairTerm.Length && initialTemperature <= 0; s++)
@@ -322,6 +357,7 @@ public static class PortfolioOptimizer
         if (initialTemperature <= 0) return null;
 
         int steps = RefinementBaseSteps + RefinementStepsPerLine * k;
+        var trialLine = new int[pickCount];
         for (int step = 0; step < steps; step++)
         {
             double temperature = initialTemperature * Math.Pow(1e-4, (double)step / steps);
@@ -337,7 +373,18 @@ public static class PortfolioOptimizer
                 delta = shared == pickCount ? double.PositiveInfinity : delta + pairTerm[shared] - pairTerm[overlap[i, j]];
             }
             if (double.IsPositiveInfinity(delta)) continue;
-            if (delta > 0 && rng.NextDouble() >= Math.Exp(-delta / temperature)) continue;
+
+            // On coverage-neutral swaps (delta == 0), never degrade ball score without thermal reason;
+            // this prevents neutral swaps from random-walking away from high-scoring balls.
+            if (Math.Abs(delta) <= 1e-15)
+            {
+                double ballDelta = scores.GetValueOrDefault(added) - scores.GetValueOrDefault(removed);
+                if (ballDelta < -1e-9) continue;
+            }
+            else if (delta > 0 && rng.NextDouble() >= Math.Exp(-delta / temperature))
+            {
+                continue;
+            }
 
             for (int j = 0; j < k; j++)
             {
@@ -349,14 +396,24 @@ public static class PortfolioOptimizer
             has[i][added] = true;
             lines[i][position] = added;
             loss += delta;
-            if (loss < bestLoss - 1e-15)
+
+            Array.Copy(lines[i], trialLine, pickCount);
+            Array.Sort(trialLine);
+            double newLineScore = LineScore(fs, trialLine, scores, strategy);
+            totalScore += newLineScore - lineScores[i];
+            lineScores[i] = newLineScore;
+
+            if (loss < bestLoss - 1e-15 ||
+                (Math.Abs(loss - bestLoss) <= 1e-15 && totalScore > bestScore + 1e-9))
             {
                 bestLoss = loss;
+                bestScore = totalScore;
                 best = lines.Select(line => line.ToArray()).ToArray();
             }
         }
 
-        if (best is null || bestLoss >= startLoss) return null;
+        if (best is null || (bestLoss > startLoss - 1e-15 && bestScore <= startScore + 1e-9))
+            return null;
         foreach (var line in best) Array.Sort(line);
         return [.. best];
     }

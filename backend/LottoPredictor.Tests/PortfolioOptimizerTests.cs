@@ -164,6 +164,21 @@ public class PortfolioOptimizerTests
         Assert.Equal(0, PortfolioOptimizer.LinesForTarget(0, p, 2));
     }
 
+    [Fact]
+    public void First_portfolio_line_attains_optimal_single_line_score()
+    {
+        var history = RandomHistory(260, 59, seed: 314);
+        var fs = FeatureCalculator.Compute(history, configuredPoolSize: 59);
+        var strategy = ScoringStrategy.Candidates[0];
+        var scores = PredictionEngine.ScoreNumbers(fs, strategy);
+
+        var singleBest = PredictionEngine.GenerateFromScores(fs, scores, strategy);
+        var portfolio = PortfolioOptimizer.BuildCoveragePortfolio(fs, scores, strategy, lineCount: 1);
+
+        Assert.Single(portfolio.Lines);
+        Assert.Equal(Math.Round(singleBest.SetScore, 4), portfolio.Lines[0].Score, 4);
+    }
+
     private static IEnumerable<int[]> AllDraws(int pool, int pick)
     {
         var idx = Enumerable.Range(1, pick).ToArray();

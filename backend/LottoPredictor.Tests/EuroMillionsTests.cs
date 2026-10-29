@@ -84,6 +84,10 @@ public class EuroMillionsTests
             Assert.Equal(9, fs.Pool.PoolAt(0));
             Assert.Equal(11, fs.Pool.PoolAt(20));
             Assert.Equal(12, fs.Pool.PoolAt(40));
+            Assert.Equal(40, fs.Pool.CurrentEraStartIndex);
+            // ExpectedPairCount for stars 1 and 2 spans all three eras: 20*(2/72) + 20*(2/110) + 20*(2/132).
+            double expectedPair = 20 * (2.0 / 72.0) + 20 * (2.0 / 110.0) + 20 * (2.0 / 132.0);
+            Assert.Equal(expectedPair, fs.ExpectedPairCount(1, 2), 10);
         }
 
     [Fact]
@@ -229,6 +233,67 @@ public class EuroMillionsTests
         {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             if (File.Exists(ukPath)) File.Delete(ukPath);
+            if (File.Exists(euroPath)) File.Delete(euroPath);
+        }
+    }
+
+    [Fact]
+    public async Task EuroMillions_portfolio_learns_bonus_strategy_and_diversifies_lucky_stars()
+    {
+        string euroPath = Path.Combine(Path.GetTempPath(), $"euromillions-bonus-{Guid.NewGuid():N}.db");
+        try
+        {
+            var selection = new EuroMillionsSelection();
+            IDbContextFactory<LottoDbContext> factory = new TestDbFactory(euroPath);
+            var rng = new Random(77);
+            using (var db = factory.CreateDbContext())
+            {
+                for (int i = 1; i <= 40; i++)
+                {
+                    var mains = new HashSet<int>();
+                    while (mains.Count < 5) mains.Add(rng.Next(1, 51));
+                    var stars = new HashSet<int>();
+                    while (stars.Count < 2) stars.Add(rng.Next(1, 13));
+                    var sortedStars = stars.OrderBy(s => s).ToArray();
+                    var draw = new Draw
+                    {
+                        Sequence = i,
+                        DrawNumber = i,
+                        Date = new DateOnly(2020, 1, 1).AddDays(i),
+                        Bonus = sortedStars[0],
+                        Bonus2 = sortedStars[1],
+                        Source = "test",
+                    };
+                    draw.SetNumbers(mains.OrderBy(m => m).ToArray());
+                    db.Draws.Add(draw);
+                }
+                db.SaveChanges();
+            }
+
+            var analysis = new AnalysisService(factory, new AnalysisOptions
+            {
+                BacktestEvalWindow = 12,
+                BacktestWarmup = 15,
+            }, selection);
+            var predictions = new PredictionService(factory, analysis, selection);
+
+            var snapshot = await analysis.RecalculateAsync();
+            Assert.NotNull(snapshot.ActiveBonusStrategy);
+            Assert.NotNull(snapshot.BonusHedgeWeights);
+
+            var portfolio = await predictions.GenerateLinesAsync(count: 8);
+            Assert.Equal(8, portfolio.Lines.Count);
+            Assert.All(portfolio.Lines, l => Assert.Equal(2, l.LuckyStars.Length));
+            // 8 lines of 2 Lucky Stars must span multiple distinct star pairs.
+            int distinctStarPairs = portfolio.Lines
+                .Select(l => string.Join(",", l.LuckyStars))
+                .Distinct()
+                .Count();
+            Assert.Equal(8, distinctStarPairs);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             if (File.Exists(euroPath)) File.Delete(euroPath);
         }
     }

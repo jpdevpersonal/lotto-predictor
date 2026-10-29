@@ -170,4 +170,58 @@ public class FeatureCalculatorTests
         Assert.Equal(1, fs.For(30).PositionCounts[5]);
         Assert.Equal(0, fs.For(30).PositionCounts[0]);
     }
+
+    [Fact]
+    public void Multi_era_shrinkage_and_momentum_do_not_confound_expansion_balls()
+    {
+        // 49 draws in Era 1 (pool 49, each ball 1..49 drawn 6 times -> rate 6/49)
+        // followed by 59 draws in Era 2 (pool 59, each ball 1..59 drawn 6 times -> rate 6/59).
+        var draws = new List<DrawEvent>();
+        int seq = 1;
+        for (int i = 0; i < 49; i++)
+        {
+            var nums = Enumerable.Range(0, 6).Select(k => ((i + k) % 49) + 1).OrderBy(x => x).ToArray();
+            draws.Add(new DrawEvent(seq, seq++, new DateOnly(2015, 1, 1).AddDays(i), nums));
+        }
+        for (int i = 0; i < 59; i++)
+        {
+            var nums = Enumerable.Range(0, 6).Select(k => ((i + k) % 59) + 1).OrderBy(x => x).ToArray();
+            draws.Add(new DrawEvent(seq, seq++, new DateOnly(2016, 1, 1).AddDays(i), nums));
+        }
+
+        var fs = FeatureCalculator.Compute(
+            draws, configuredPoolSize: 59, poolExpansionDate: new DateOnly(2015, 10, 10));
+
+        // Every ball 1..49 and 50..59 hit its exact fair expectation in every era it was eligible.
+        // Balls 20 (Era 1+2) and 55 (Era 2 only) both have 6 hits in the last 50 draws and fair career rates,
+        // so their shrunk frequencies and momentum ratios must match without era confounding.
+        double fairNow = 6.0 / 59.0;
+        Assert.Equal(fairNow, fs.For(1).FreqRateShrunk, 6);
+        Assert.Equal(fairNow, fs.For(20).FreqRateShrunk, 6);
+        Assert.Equal(fairNow, fs.For(55).FreqRateShrunk, 6);
+        Assert.Equal(fs.For(20).RecentVsLongTerm, fs.For(55).RecentVsLongTerm, 6);
+    }
+
+    [Fact]
+    public void Physical_affinity_identifies_ball_favoured_by_active_machine_and_ball_set()
+    {
+        var rng = new Random(42);
+        var draws = new List<DrawEvent>();
+        for (int i = 1; i <= 120; i++)
+        {
+            bool activeSet = i > 60;
+            string machine = activeSet ? "Merlin" : "Arthur";
+            string ballSet = activeSet ? "3" : "1";
+            var set = new HashSet<int>();
+            if (activeSet) set.Add(17); // Ball 17 is physically favoured on (Merlin, Set 3)
+            while (set.Count < 6) set.Add(rng.Next(1, 50));
+            draws.Add(new DrawEvent(
+                i, i, new DateOnly(2022, 1, 1).AddDays(i),
+                [.. set.OrderBy(x => x)], null, machine, ballSet));
+        }
+
+        var fs = FeatureCalculator.Compute(draws, configuredPoolSize: 49);
+        Assert.True(fs.For(17).PhysicalAffinity > 1.0, $"Expected strong physical affinity, got {fs.For(17).PhysicalAffinity}");
+        Assert.Equal(17, fs.Numbers.OrderByDescending(f => f.PhysicalAffinity).First().Number);
+    }
 }

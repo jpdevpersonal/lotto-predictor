@@ -19,16 +19,21 @@ public static class PredictionEngine
     private const int CandidatePoolSize = 18;
 
     /// <summary>Per-number scores under a strategy. Key = ball number.</summary>
-    public static Dictionary<int, double> ScoreNumbers(FeatureSet fs, ScoringStrategy s)
+    public static Dictionary<int, double> ScoreNumbers(FeatureSet fs, ScoringStrategy s) =>
+        ScoreNumbers(FeatureMatrix(fs), s);
+
+    /// <summary>Per-number scores from a precomputed feature matrix. Key = ball number.</summary>
+    public static Dictionary<int, double> ScoreNumbers((int[] Numbers, double[][] X) matrix, ScoringStrategy s)
     {
-        var (numbers, x) = FeatureMatrix(fs);
-        double[] w = [s.WLongTerm, s.WRecent, s.WGap, s.WMomentum, s.WBias, s.WBonus];
+        var (numbers, x) = matrix;
+        double w0 = s.WLongTerm, w1 = s.WRecent, w2 = s.WGap,
+               w3 = s.WMomentum, w4 = s.WBias, w5 = s.WBonus;
         var scores = new Dictionary<int, double>(numbers.Length);
         for (int i = 0; i < numbers.Length; i++)
         {
-            double score = 0;
-            for (int j = 0; j < FeatureCount; j++) score += w[j] * x[i][j];
-            scores[numbers[i]] = score;
+            var xi = x[i];
+            scores[numbers[i]] = w0 * xi[0] + w1 * xi[1] + w2 * xi[2] +
+                                 w3 * xi[3] + w4 * xi[4] + w5 * xi[5];
         }
         return scores;
     }
@@ -46,9 +51,17 @@ public static class PredictionEngine
         var eligible = fs.Numbers.Where(f => f.Number <= fs.Pool.NextPoolSize).ToArray();
 
         var zFreq = ZScores(eligible, f => f.FreqRateShrunk);
-        var zRecent = ZScores(eligible, f => f.RecentRateShrunk);
-        var zMomentum = ZScores(eligible, f => f.RecentVsLongTerm);
-        var zBonus = ZScores(eligible, f => f.BonusRate);
+        var zRecent = ZScores(eligible, f => 0.70 * f.RecentRateShrunk + 0.30 * f.EwmaRate);
+        var rawMomentum = ZScores(eligible, f => f.RecentVsLongTerm);
+        var orthoMomentum = Orthogonalise(rawMomentum, zRecent, zFreq);
+        bool hasMainBonus = false;
+        for (int i = 0; i < eligible.Length; i++)
+        {
+            if (eligible[i].BonusCount > 0) { hasMainBonus = true; break; }
+        }
+        var zBonus = hasMainBonus
+            ? ZScores(eligible, f => f.BonusRate)
+            : ZScores(eligible, f => f.SecondarySignal);
 
         var numbers = new int[eligible.Length];
         var x = new double[eligible.Length][];
@@ -56,17 +69,65 @@ public static class PredictionEngine
         {
             var f = eligible[i];
             numbers[i] = f.Number;
+            double gapSignal = Math.Clamp(0.75 * (f.GapRatio - 1.0) + 0.25 * f.GapHazardZ, -2.0, 2.0);
+            double momentumSignal = Math.Clamp(0.65 * orthoMomentum[i] + 0.35 * rawMomentum[i], -3.0, 3.0);
+            double softBias = SoftThreshold(f.BiasZ, 0.35) + 0.45 * f.PhysicalAffinity;
+            double bonusOrSecondary = hasMainBonus
+                ? zBonus[i] + 0.25 * f.PhysicalAffinity
+                : zBonus[i];
+
             x[i] =
             [
                 zFreq[i],
                 zRecent[i],
-                Math.Clamp(f.GapRatio - 1.0, -2.0, 2.0),
-                Math.Clamp(zMomentum[i], -3.0, 3.0),
-                Math.Clamp(f.BiasZ, -3.0, 3.0),
-                Math.Clamp(zBonus[i], -3.0, 3.0),
+                gapSignal,
+                momentumSignal,
+                Math.Clamp(softBias, -3.0, 3.0),
+                Math.Clamp(bonusOrSecondary, -3.0, 3.0),
             ];
         }
         return (numbers, x);
+    }
+
+    private static double SoftThreshold(double z, double threshold) =>
+        Math.Abs(z) <= threshold ? 0.25 * z : Math.CopySign(Math.Abs(z) - 0.75 * threshold, z);
+
+    /// <summary>Projects out the components of <paramref name="target"/> that are collinear with
+    /// <paramref name="basis1"/> and <paramref name="basis2"/>, then re-standardises to unit variance.</summary>
+    private static double[] Orthogonalise(double[] target, double[] basis1, double[] basis2)
+    {
+        int n = target.Length;
+        if (n <= 2) return target;
+        var res = (double[])target.Clone();
+        ProjectOut(res, basis1);
+        ProjectOut(res, basis2);
+        double mean = 0;
+        for (int i = 0; i < n; i++) mean += res[i];
+        mean /= n;
+        double var = 0;
+        for (int i = 0; i < n; i++)
+        {
+            double d = res[i] - mean;
+            var += d * d;
+        }
+        double std = Math.Sqrt(var / (n - 1));
+        if (std <= 1e-9) return target;
+        for (int i = 0; i < n; i++) res[i] = (res[i] - mean) / std;
+        return res;
+    }
+
+    private static void ProjectOut(double[] target, double[] basis)
+    {
+        double dot = 0, norm = 0;
+        for (int i = 0; i < target.Length; i++)
+        {
+            dot += target[i] * basis[i];
+            norm += basis[i] * basis[i];
+        }
+        if (norm <= 1e-9) return;
+        double coeff = dot / norm;
+        for (int i = 0; i < target.Length; i++)
+            target[i] -= coeff * basis[i];
     }
 
     public static PredictionResult Generate(
@@ -76,7 +137,9 @@ public static class PredictionEngine
         GenerateFromScores(fs, ScoreNumbers(fs, strategy), strategy, excludedNumbers);
 
     /// <summary>Combination search over externally supplied per-number scores. Used directly by
-    /// the hedge ensemble, which blends the score maps of several strategies.</summary>
+    /// the hedge ensemble, which blends the score maps of several strategies. Searches all
+    /// combinations of the top candidate pool, then applies 1-opt full-pool ball swap refinement
+    /// so balls outside the top 18 with strong pair synergy or typicality balance can be chosen.</summary>
     public static PredictionResult GenerateFromScores(
         FeatureSet fs,
         Dictionary<int, double> scores,
@@ -96,38 +159,129 @@ public static class PredictionEngine
         // Deterministic ranking: score desc, then lower number first.
         var ranked = eligibleScores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
             .Select(kv => kv.Key).ToArray();
-        var candidates = ranked.Take(Math.Min(CandidatePoolSize, ranked.Length)).ToArray();
+        int candidateCount = Math.Min(CandidatePoolSize, ranked.Length);
+        var candidates = ranked.Take(candidateCount).ToArray();
+        Array.Sort(candidates); // Sorted ascending so every generated combination is already sorted.
 
-        int[]? best = null;
+        var candScores = new double[candidateCount];
+        for (int i = 0; i < candidateCount; i++)
+            candScores[i] = eligibleScores[candidates[i]];
+
+        var synergyMatrix = fs.GetPairSynergyMatrix();
+        double pairFactor = pickCount > 1 ? 2.0 / (pickCount * (pickCount - 1)) : 0.0;
+        double pairW = strategy.PairWeight;
+        double penW = strategy.PenaltyWeight;
+
+        int[] best = new int[pickCount];
+        var work = new int[pickCount];
         double bestScore = double.NegativeInfinity;
         double bestPenalty = 0, bestSynergy = 0;
 
-        foreach (var combo in Combinations(candidates.Length, pickCount))
+        foreach (var combo in Combinations(candidateCount, pickCount))
         {
-            var set = new int[pickCount];
-            for (int i = 0; i < pickCount; i++) set[i] = candidates[combo[i]];
-            Array.Sort(set);
+            double numberScore = 0;
+            for (int i = 0; i < pickCount; i++)
+            {
+                int cIdx = combo[i];
+                work[i] = candidates[cIdx];
+                numberScore += candScores[cIdx];
+            }
 
-            double numberScore = set.Sum(v => eligibleScores[v]);
-            double synergy = PairSynergy(fs, set);
-            double penalty = TypicalityPenalty(fs, set);
-            double total = numberScore + strategy.PairWeight * synergy - strategy.PenaltyWeight * penalty;
+            double synergy = 0;
+            if (pairFactor > 0)
+            {
+                for (int a = 0; a < pickCount; a++)
+                {
+                    int va = work[a];
+                    for (int b = a + 1; b < pickCount; b++)
+                        synergy += synergyMatrix[va, work[b]];
+                }
+                synergy *= pairFactor;
+            }
 
-            if (total > bestScore || (total == bestScore && best != null && CompareLex(set, best) < 0))
+            double penalty = TypicalityPenalty(fs, work);
+            double total = numberScore + pairW * synergy - penW * penalty;
+
+            if (total > bestScore || (total == bestScore && CompareLex(work, best) < 0))
             {
                 bestScore = total;
-                best = set;
+                Array.Copy(work, best, pickCount);
                 bestPenalty = penalty;
                 bestSynergy = synergy;
             }
         }
 
-        var selected = best!.Select(v => new ScoredNumber(fs.For(v), eligibleScores[v])).ToList();
-        return new PredictionResult(best!, strategy, selected, bestScore, bestPenalty, bestSynergy);
+        // 1-opt full-pool ball swap refinement: allow balls ranked beyond CandidatePoolSize
+        // to enter the line when pair synergy or typicality balance improves total set score.
+        if (ranked.Length > candidateCount && (pairW > 0 || penW > 0))
+        {
+            (best, bestScore, bestPenalty, bestSynergy) = RefineWithFullPoolSwaps(
+                fs, best, bestScore, bestPenalty, bestSynergy,
+                ranked, candidateCount, eligibleScores, strategy);
+        }
+
+        var selected = best.Select(v => new ScoredNumber(fs.For(v), eligibleScores[v])).ToList();
+        return new PredictionResult(best, strategy, selected, bestScore, bestPenalty, bestSynergy);
+    }
+
+    private static (int[] Set, double Score, double Penalty, double Synergy) RefineWithFullPoolSwaps(
+        FeatureSet fs,
+        int[] currentSet,
+        double currentScore,
+        double currentPenalty,
+        double currentSynergy,
+        int[] ranked,
+        int startPoolIndex,
+        Dictionary<int, double> eligibleScores,
+        ScoringStrategy strategy)
+    {
+        int pickCount = currentSet.Length;
+        var best = (int[])currentSet.Clone();
+        double bestScore = currentScore;
+        double bestPenalty = currentPenalty;
+        double bestSynergy = currentSynergy;
+        var trial = new int[pickCount];
+
+        for (int pass = 0; pass < pickCount; pass++)
+        {
+            bool improved = false;
+            for (int r = startPoolIndex; r < ranked.Length; r++)
+            {
+                int challenger = ranked[r];
+                if (Array.BinarySearch(best, challenger) >= 0) continue;
+
+                for (int pos = 0; pos < pickCount; pos++)
+                {
+                    Array.Copy(best, trial, pickCount);
+                    trial[pos] = challenger;
+                    Array.Sort(trial);
+
+                    double numScore = 0;
+                    for (int i = 0; i < pickCount; i++) numScore += eligibleScores[trial[i]];
+                    double syn = PairSynergy(fs, trial);
+                    double pen = TypicalityPenalty(fs, trial);
+                    double total = numScore + strategy.PairWeight * syn - strategy.PenaltyWeight * pen;
+
+                    if (total > bestScore + 1e-12 ||
+                        (Math.Abs(total - bestScore) <= 1e-12 && CompareLex(trial, best) < 0))
+                    {
+                        bestScore = total;
+                        bestPenalty = pen;
+                        bestSynergy = syn;
+                        Array.Copy(trial, best, pickCount);
+                        improved = true;
+                    }
+                }
+            }
+            if (!improved) break;
+        }
+
+        return (best, bestScore, bestPenalty, bestSynergy);
     }
 
     /// <summary>The top-ranked distinct lines under a strategy, best first. Same deterministic
-    /// combination search as the single prediction, but keeping the N best sets.</summary>
+    /// combination search as the single prediction, plus full-pool 1-opt swap candidates from the
+    /// leading seeds so balls outside the top 18 can participate in top lines and consensus.</summary>
     public static IReadOnlyList<PredictionResult> GenerateTopLines(
         FeatureSet fs,
         Dictionary<int, double> scores,
@@ -147,23 +301,46 @@ public static class PredictionEngine
 
         var ranked = eligibleScores.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
             .Select(kv => kv.Key).ToArray();
-        var candidates = ranked.Take(Math.Min(CandidatePoolSize, ranked.Length)).ToArray();
+        int candidateCount = Math.Min(CandidatePoolSize, ranked.Length);
+        var candidates = ranked.Take(candidateCount).ToArray();
+        Array.Sort(candidates);
 
-        var all = new List<(int[] Set, double Total, double Penalty, double Synergy)>();
+        var byKey = new Dictionary<string, (int[] Set, double Total, double Penalty, double Synergy)>();
         foreach (var combo in Combinations(candidates.Length, pickCount))
         {
             var set = new int[pickCount];
-            for (int i = 0; i < pickCount; i++) set[i] = candidates[combo[i]];
-            Array.Sort(set);
+            double numberScore = 0;
+            for (int i = 0; i < pickCount; i++)
+            {
+                int v = candidates[combo[i]];
+                set[i] = v;
+                numberScore += eligibleScores[v];
+            }
 
-            double numberScore = set.Sum(v => eligibleScores[v]);
             double synergy = PairSynergy(fs, set);
             double penalty = TypicalityPenalty(fs, set);
-            all.Add((set, numberScore + strategy.PairWeight * synergy - strategy.PenaltyWeight * penalty,
-                penalty, synergy));
+            double total = numberScore + strategy.PairWeight * synergy - strategy.PenaltyWeight * penalty;
+            byKey[string.Join(',', set)] = (set, total, penalty, synergy);
         }
 
-        return all
+        if (ranked.Length > candidateCount && (strategy.PairWeight > 0 || strategy.PenaltyWeight > 0))
+        {
+            var topSeeds = byKey.Values
+                .OrderByDescending(l => l.Total)
+                .ThenBy(l => l.Set, Comparer<int[]>.Create(CompareLex))
+                .Take(Math.Min(12, Math.Max(4, count / 4)))
+                .ToList();
+
+            foreach (var seed in topSeeds)
+            {
+                var refined = RefineWithFullPoolSwaps(
+                    fs, seed.Set, seed.Total, seed.Penalty, seed.Synergy,
+                    ranked, candidateCount, eligibleScores, strategy);
+                byKey[string.Join(',', refined.Set)] = refined;
+            }
+        }
+
+        return byKey.Values
             .OrderByDescending(l => l.Total)
             .ThenBy(l => l.Set, Comparer<int[]>.Create(CompareLex))
             .Take(count)
@@ -248,17 +425,20 @@ public static class PredictionEngine
     /// <summary>Mean clipped deviation of observed pair co-occurrence from uniform expectation.</summary>
     public static double PairSynergy(FeatureSet fs, int[] sortedSet)
     {
+        int len = sortedSet.Length;
+        if (len < 2) return 0;
+        var matrix = fs.GetPairSynergyMatrix();
         double sum = 0;
         int pairs = 0;
-        for (int a = 0; a < sortedSet.Length; a++)
-            for (int b = a + 1; b < sortedSet.Length; b++)
+        for (int a = 0; a < len; a++)
+        {
+            int x = sortedSet[a];
+            for (int b = a + 1; b < len; b++)
             {
-                int x = sortedSet[a], y = sortedSet[b];
-                double observed = fs.PairCounts[x, y];
-                double expected = fs.ExpectedPairCount(x, y);
-                sum += Math.Clamp((observed - expected) / Math.Sqrt(expected + 1.0), -2.0, 2.0);
+                sum += matrix[x, sortedSet[b]];
                 pairs++;
             }
+        }
         return pairs > 0 ? sum / pairs : 0;
     }
 
@@ -266,12 +446,19 @@ public static class PredictionEngine
     /// would be historically extreme. Quadratic in the z-score, clipped, never infinite.</summary>
     public static double TypicalityPenalty(FeatureSet fs, int[] sortedSet)
     {
-        double sum = sortedSet.Sum();
-        double range = sortedSet[^1] - sortedSet[0];
-        double odd = sortedSet.Count(v => v % 2 == 1);
-        int consec = 0;
-        for (int i = 0; i < sortedSet.Length - 1; i++)
-            if (sortedSet[i + 1] == sortedSet[i] + 1) consec++;
+        int len = sortedSet.Length;
+        if (len == 0) return 0;
+        int sumInt = 0, oddInt = 0, consec = 0;
+        for (int i = 0; i < len; i++)
+        {
+            int v = sortedSet[i];
+            sumInt += v;
+            if ((v & 1) == 1) oddInt++;
+            if (i < len - 1 && sortedSet[i + 1] == v + 1) consec++;
+        }
+        double sum = sumInt;
+        double range = sortedSet[len - 1] - sortedSet[0];
+        double odd = oddInt;
 
         double zSum = SafeZ(sum, fs.SumMean, fs.SumStd);
         double zRange = SafeZ(range, fs.RangeMean, fs.RangeStd);

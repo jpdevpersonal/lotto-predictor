@@ -99,22 +99,27 @@ API: `GET /api/analysis/status` reads the selected lottery's status;
 usual mutation key. All games use `X-Lottery`. Missing/stale analysis blocks generation with
 HTTP 409 Problem Details. See [Analysis.http](backend/LottoPredictor.Api/Analysis.http).
 
-1. `FeatureCalculator` computes per-number features (era-aware frequency rate, counts over the
-   last 10/25/50/100 draws, draws since last seen, average gap, gap ratio, recent-vs-long-term
-   ratio, positional counts, and a **Bayesian bias z-score** of observed appearances vs a
-   fair-machine expectation) plus pair/triple co-occurrence counts, combination-level
-   distributions (sum, range, odd/even, consecutive numbers, low/high split) and a **chi-square
-   uniformity test** over the current era — always from a strict prefix of draws.
-2. `PredictionEngine` z-scores the features and combines them with a strategy's weights
-   (long-term, recent, gap, momentum, bias, bonus), then searches combinations of the top
-   18 candidates, adding a pair-synergy bonus and a soft typicality penalty (extreme sum /
-   odd-even balance / range / clustering are penalised, never excluded).
+1. `FeatureCalculator` computes per-number features (era-standardised frequency rate, counts over
+   the last 10/25/50/100 draws, multi-horizon EWMA rate, draws since last seen, era-scaled average
+   gap, gap ratio, renewal gap-hazard residual, recent-vs-long-term ratio, positional counts,
+   active `Machine` / `BallSet` physical equipment affinity, and a **Bayesian bias z-score** of
+   observed appearances vs a fair-machine expectation) plus pair/triple co-occurrence counts,
+   combination-level distributions (sum, range, odd/even, consecutive numbers, low/high split) and
+   a **chi-square uniformity test** over the current constant-pool era — always from a strict
+   prefix of draws.
+2. `PredictionEngine` orthogonalises and z-scores the features and combines them with a strategy's
+   weights (long-term, recent, gap, momentum, bias, bonus/secondary), then searches combinations of
+   the top 18 candidates followed by 1-opt full-pool ball swap refinement, adding a pair-synergy
+   bonus and a soft typicality penalty (extreme sum / odd-even balance / range / clustering are
+   penalised, never excluded).
 3. `Backtester` runs walk-forward validation: for each of the last 1,000 draws (or available history
    after 150 warmup draws) it predicts using
    only earlier draws and records matches, for every candidate strategy, for an **online hedge
-   ensemble**, and for a seeded random baseline. Selection ranks three-plus hit rate first,
-   then average matches, using only the earlier two-thirds; displayed results use the later
-   one-third. Recency-weighted averages remain secondary diagnostics.
+   ensemble** (including walk-forward `online-logit`), and for a seeded random baseline. Selection
+   ranks three-plus hit rate first, then average matches, recency-weighted matches, and dense
+   per-step `scoreZ`, using only the earlier two-thirds; displayed results use the later one-third.
+   When a lottery has a separate bonus pool (such as EuroMillions Lucky Stars or Set For Life Life
+   Ball), a dedicated strategy and hedge weighting are calibrated for that pool.
 4. The verdict compares the strategy selected on earlier walk-forward draws against the untouched
   chronological holdout using an **exact one-sided binomial test** for the three-plus objective,
   while still reporting average matches against the analytic random expectation (36/59 ≈ 0.61
@@ -150,7 +155,8 @@ they accumulate.
   falls behind can recover. The weights carry over between draws and restarts instead of being
   rebuilt from uniform on every analysis. The backtest uses the same reward.
 - **Champion/challenger evolution** (`StrategyOptimizer`, `LearnedStrategies.Status`): each
-  rebuild breeds a deterministic generation from training-prefix winners. The generation number
+  rebuild runs multi-generation tournament evolution strictly inside the pre-holdout training
+  prefix using variance-reduced composite fitness and blend crossover (BLX-α). The generation number
   advances only when a new draw exists, so rebuilding the same data is reproducible. At most once
   every 8 new draws, the 4 best fresh candidates (by the backtest's selection metric) join a live
   population of up to 16 challengers. Each records `BornAfterSequence`. Live challengers are never
@@ -158,11 +164,12 @@ they accumulate.
   is needed, the challenger with the lowest **shrunk** prospective reward
   (`mean·n/(n+20)`) is retired, but only after 20 scored draws, and never the current champion.
 - **Online model** (`OnlineBallModel`, `online-logit`): a per-ball conditional-logit model over
-  the same six standardised features. After each draw it takes one AdaGrad gradient step, with
+  the same six standardised features. After each draw it takes one adaptive gradient step (with an
+  EMA squared-gradient accumulator window so adaptation never freezes on long histories), with
   L2 shrinkage toward the fair-machine prior of zero weights, using features from earlier draws
   only. On a fair machine its coefficients stay near zero; a real bias would pull them away.
-  The first recalculation warm-starts it walk-forward over the evaluation window. It then joins
-  the hedge ensemble and the ledger like any other strategy.
+  The first recalculation warm-starts it walk-forward over the evaluation window and calibrates
+  its initial hedge weight. It then joins the hedge ensemble and the ledger like any other strategy.
 - **Promotion gate** (`ProspectiveEvaluator`): the active strategy comes from the backtest until
   100 prospective draws are scored. After that the incumbent (the hedge ensemble by default)
   is kept unless a challenger with at least 100 scored draws beats it on a **paired** test of

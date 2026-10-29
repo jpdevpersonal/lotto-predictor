@@ -40,7 +40,7 @@ public sealed class ShadowLedger(LottoDbContext db, LotteryProfile lottery, Anal
     public static List<DrawEvent> MainEvents(IEnumerable<Draw> draws, LotteryProfile lottery) =>
         draws.OrderBy(d => d.Sequence)
             .Select(d => new DrawEvent(d.Sequence, d.DrawNumber, d.Date, d.Numbers(),
-                lottery.BonusSharesMainPool ? d.Bonus : null))
+                lottery.BonusSharesMainPool ? d.Bonus : null, d.Machine, d.BallSet))
             .ToList();
 
     public FeatureSet Features(IReadOnlyList<DrawEvent> prefix) =>

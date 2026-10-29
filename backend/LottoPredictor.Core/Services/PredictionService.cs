@@ -245,9 +245,7 @@ public class PredictionService(
         var lines = PredictionEngine.GenerateTopLines(snapshot.Features, scores, strategy, count);
         var (numbers, frequencies) = PredictionEngine.Consensus(lines, scores);
         var starLines = GenerateLuckyStarLines(snapshot, count);
-        var starScores = snapshot.LuckyStarFeatures is null
-            ? []
-            : PredictionEngine.ScoreNumbers(snapshot.LuckyStarFeatures, strategy);
+        var (starScores, _) = ActiveBonusScores(snapshot);
         var (stars, starFrequencies) = starLines.Count > 0
             ? PredictionEngine.Consensus(starLines, starScores)
             : (Array.Empty<int>(), Array.Empty<int>());
@@ -260,19 +258,48 @@ public class PredictionService(
         AnalysisSnapshot snapshot, int count, IReadOnlySet<int>? excludedNumbers = null)
     {
         if (snapshot.LuckyStarFeatures is null) return [];
-        var (scores, lineStrategy) = ActiveScores(snapshot, snapshot.LuckyStarFeatures);
-        return PredictionEngine.GenerateTopLines(
-            snapshot.LuckyStarFeatures, scores, lineStrategy, count, excludedNumbers);
+        var (scores, lineStrategy) = ActiveBonusScores(snapshot);
+        var pool = PredictionEngine.GenerateTopLines(
+            snapshot.LuckyStarFeatures, scores, lineStrategy, Math.Max(count, 24), excludedNumbers);
+        if (pool.Count <= 1 || count <= 1) return pool.Take(count).ToList();
+
+        // Diversify secondary lines across a portfolio while keeping Line 1 as the top-ranked line.
+        var diversified = new List<PredictionResult>(Math.Min(count, pool.Count)) { pool[0] };
+        var remaining = pool.Skip(1).ToList();
+        var uses = new int[snapshot.LuckyStarFeatures.Pool.PoolSize + 1];
+        foreach (var n in pool[0].Numbers) uses[n]++;
+
+        while (diversified.Count < count && remaining.Count > 0)
+        {
+            int bestIdx = 0;
+            double bestAdjusted = double.NegativeInfinity;
+            for (int i = 0; i < remaining.Count; i++)
+            {
+                var cand = remaining[i];
+                int sharedUses = 0;
+                foreach (var n in cand.Numbers) sharedUses += uses[n];
+                double adjusted = cand.SetScore - 0.35 * sharedUses;
+                if (adjusted > bestAdjusted)
+                {
+                    bestAdjusted = adjusted;
+                    bestIdx = i;
+                }
+            }
+            var chosen = remaining[bestIdx];
+            remaining.RemoveAt(bestIdx);
+            diversified.Add(chosen);
+            foreach (var n in chosen.Numbers) uses[n]++;
+        }
+        return diversified;
     }
 
     private static PredictionResult GenerateForFeatures(
         AnalysisSnapshot snapshot, FeatureSet features, IReadOnlySet<int>? excludedNumbers = null)
     {
-        var strategy = snapshot.ActiveStrategy;
-        return strategy.Name == Backtester.EnsembleName
-            ? PredictionEngine.GenerateEnsemble(
-                features, snapshot.EnsembleMembers, snapshot.HedgeWeights, Backtester.EnsembleName, excludedNumbers)
-            : PredictionEngine.Generate(features, strategy, excludedNumbers);
+        var (scores, strategy) = ReferenceEquals(features, snapshot.LuckyStarFeatures)
+            ? ActiveBonusScores(snapshot)
+            : ActiveScores(snapshot, features);
+        return PredictionEngine.GenerateFromScores(features, scores, strategy, excludedNumbers);
     }
 
     /// <summary>Score map and combination weights for the currently active strategy,
@@ -288,6 +315,22 @@ public class PredictionService(
             return (PredictionEngine.ScoreNumbers(features, strategy), strategy);
         return PredictionEngine.EnsembleScores(
             features, snapshot.EnsembleMembers, snapshot.HedgeWeights, Backtester.EnsembleName);
+    }
+
+    private static (Dictionary<int, double> Scores, ScoringStrategy Strategy) ActiveBonusScores(
+        AnalysisSnapshot snapshot)
+    {
+        if (snapshot.LuckyStarFeatures is null)
+            return ([], snapshot.ActiveStrategy);
+        var bonusStrategy = snapshot.ActiveBonusStrategy ?? snapshot.ActiveStrategy;
+        var bonusHedge = snapshot.BonusHedgeWeights ?? snapshot.HedgeWeights;
+        if (bonusStrategy.Name != Backtester.EnsembleName)
+            return (PredictionEngine.ScoreNumbers(snapshot.LuckyStarFeatures, bonusStrategy), bonusStrategy);
+        var members = bonusHedge.Keys.All(k => ScoringStrategy.Candidates.Any(c => c.Name == k))
+            ? ScoringStrategy.Candidates
+            : snapshot.EnsembleMembers;
+        return PredictionEngine.EnsembleScores(
+            snapshot.LuckyStarFeatures, members, bonusHedge, Backtester.EnsembleName);
     }
 
     public async Task<PredictionDto?> GetLatestAsync(CancellationToken ct = default)
