@@ -221,7 +221,10 @@ public record LearnedStrategyDto(
     double AvgMatches,
     double RecencyWeightedAvg,
     int EvaluatedDraws,
-    DateTime CreatedUtc);
+    DateTime CreatedUtc,
+    string Status = "Challenger",
+    int BornAfterSequence = 0,
+    DateTime? RetiredUtc = null);
 
 public record PerformancePointDto(
     int DrawCount,
@@ -242,7 +245,56 @@ public record LearningDto(
     UniformityDto Uniformity,
     IReadOnlyList<HedgeWeightDto> HedgeWeights,
     IReadOnlyList<LearnedStrategyDto> LearnedStrategies,
-    IReadOnlyList<PerformancePointDto> History);
+    IReadOnlyList<PerformancePointDto> History,
+    ProspectiveLearningDto? Prospective = null);
+
+/// <summary>Forward-only learning state: lines frozen before each draw and scored afterwards.</summary>
+public record ProspectiveLearningDto(
+    SelectionDto Selection,
+    int ScoredDraws,
+    int PendingLines,
+    int? LastScoredSequence,
+    IReadOnlyList<ProspectiveRecordDto> Leaderboard,
+    IReadOnlyList<ProspectiveSeriesDto> Series,
+    OnlineModelDto? OnlineModel,
+    string? LastError);
+
+public record SelectionDto(
+    string ActiveName,
+    string Source,
+    string Reason,
+    double? Confidence,
+    int ProspectiveDraws,
+    int MinProspectiveDraws,
+    int PromotedAtSequence);
+
+public record ProspectiveRecordDto(
+    string StrategyName,
+    string Kind,
+    string? Status,
+    int Draws,
+    int ThreePlusHits,
+    double ExpectedThreePlusHits,
+    double MeanMatches,
+    double MeanExpectedMatches,
+    double MeanScoreZ,
+    double ScoreZTotal,
+    double MeanReward,
+    double ShrunkReward,
+    double? HedgeWeight);
+
+public record ProspectiveSeriesDto(string StrategyName, IReadOnlyList<ProspectivePointDto> Points);
+
+/// <summary>Cumulative excess over random after each scored draw. Both values are 0 in expectation
+/// under a fair machine.</summary>
+public record ProspectivePointDto(int CutoffSequence, double CumulativeExcessMatches, double CumulativeScoreZ);
+
+public record OnlineModelDto(
+    int Updates,
+    int UpdatedThroughSequence,
+    IReadOnlyList<CoefficientDto> Coefficients);
+
+public record CoefficientDto(string Feature, double Weight);
 
 public record UniformityDto(
     double ChiSquare,

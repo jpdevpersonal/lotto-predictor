@@ -4,6 +4,7 @@ using LottoPredictor.Core.Dtos;
 using LottoPredictor.Core.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Collections.Concurrent;
+using System.Globalization;
 
 namespace LottoPredictor.Core.Services;
 
@@ -19,7 +20,22 @@ public sealed class AnalysisSnapshot
     public required IReadOnlyList<ScoringStrategy> AllStrategies { get; init; }
     public required int LearningGeneration { get; init; }
     public bool UseAllHistory { get; init; }
-    public IReadOnlyDictionary<string, double> HedgeWeights => Backtest.HedgeWeights;
+    /// <summary>Strategies blended by the live hedge ensemble: built-ins, live learned challengers
+    /// and the online model. These differ from <see cref="AllStrategies"/>, which are the backtest set.</summary>
+    private readonly IReadOnlyList<ScoringStrategy>? ensembleMembers;
+    public IReadOnlyList<ScoringStrategy> EnsembleMembers
+    {
+        get => ensembleMembers is { Count: > 0 } ? ensembleMembers : AllStrategies;
+        init => ensembleMembers = value;
+    }
+    private readonly IReadOnlyDictionary<string, double>? hedgeWeights;
+    /// <summary>Live (persisted) hedge weights. Falls back to the backtest's final weights.</summary>
+    public IReadOnlyDictionary<string, double> HedgeWeights
+    {
+        get => hedgeWeights ?? Backtest.HedgeWeights;
+        init => hedgeWeights = value;
+    }
+    public SelectionDecision? Selection { get; init; }
     public int PoolSize => Features.Pool.PoolSize;
 }
 
@@ -37,6 +53,28 @@ public class AnalysisOptions
 {
     public int BacktestEvalWindow { get; set; } = 1000;
     public int BacktestWarmup { get; set; } = 150;
+
+    // Prospective learning (shadow ledger). See README "How learning works".
+    public double HedgeEta { get; set; } = Backtester.HedgeEta;
+    /// <summary>Fixed-share mixing toward uniform after each live hedge update, so weights can recover.</summary>
+    public double HedgeFixedShare { get; set; } = 0.01;
+    public double ThreePlusRewardWeight { get; set; } = LearningSignals.DefaultThreePlusWeight;
+    public double OnlineLearningRate { get; set; } = 0.05;
+    public double OnlineL2 { get; set; } = 0.01;
+    /// <summary>Scored prospective draws needed before real results can override the backtest choice.</summary>
+    public int MinProspectiveDraws { get; set; } = 100;
+    /// <summary>Family-wise confidence required to promote a challenger (Bonferroni-corrected).</summary>
+    public double PromotionConfidence { get; set; } = 0.95;
+    /// <summary>Draws a promoted strategy keeps the role before it can be replaced.</summary>
+    public int MinHoldDraws { get; set; } = 20;
+    /// <summary>New challengers are admitted at most once per this many new draws.</summary>
+    public int GenerationIntervalDraws { get; set; } = 8;
+    public int ChallengersAdmittedPerGeneration { get; set; } = 4;
+    public int MaxLiveChallengers { get; set; } = 16;
+    /// <summary>Challengers are protected from retirement until they have this many scored draws.</summary>
+    public int MinDrawsBeforeRetire { get; set; } = 20;
+    /// <summary>Pseudo-draws of zero reward used to shrink prospective means when ranking.</summary>
+    public double ShrinkagePseudoDraws { get; set; } = 20;
 }
 
 /// <summary>Owns the derived state (features + walk-forward backtest + active strategy choice).
@@ -162,8 +200,10 @@ public class AnalysisService : IAnalysisService
                 : null;
 
             int drawCount = events.Count;
+            int latestSequence = events[^1].Sequence;
             int evalWindow = useAllHistory ? drawCount : options.BacktestEvalWindow;
-            int generation = 1;
+            var ledger = new ShadowLedger(db, lottery, options);
+            var (generation, generationIsNew) = await ResolveGenerationAsync(ledger, latestSequence, ct);
             int selectionCutoff = Backtester.SelectionCutoff(
                 drawCount, evalWindow, options.BacktestWarmup);
             IReadOnlyList<ScoringStrategy> seeds = ScoringStrategy.Candidates;
@@ -195,16 +235,45 @@ public class AnalysisService : IAnalysisService
                 .DistinctBy(s => s.Name)
                 .ToList();
 
+            // The online model learns walk-forward: each step sees only the draws before it, and
+            // persisted progress means each draw is learned from exactly once across rebuilds.
+            var (onlineModel, onlineState) = await ledger.LoadOnlineModelAsync(ct);
+            int onlineThrough = onlineState.UpdatedThroughSequence;
             var backtest = Backtester.Run(
                 events, allStrategies, evalWindow, options.BacktestWarmup,
                 configuredPoolSize: lottery.MainPoolSize,
                 poolExpansionDate: lottery.MainPoolExpansionDate,
                 onProgress: (completed, total) =>
                     ReportProgress(30 + completed * 65 / total, "Validating strategies"),
-                ct: ct);
+                ct: ct,
+                onStep: (_, stepFeatures, target) =>
+                {
+                    if (target.Sequence <= onlineThrough) return;
+                    onlineModel.Update(stepFeatures, target.Numbers);
+                    onlineThrough = target.Sequence;
+                });
 
-            ReportProgress(95, "Saving analysis");
-            await PersistLearningAsync(db, backtest, generation, drawCount, ct);
+            ReportProgress(95, "Updating prospective learning");
+            ShadowLedger.StoreOnlineModel(onlineModel, onlineState, onlineThrough);
+            await db.SaveChangesAsync(ct);
+            await PersistLearningAsync(db, ledger, backtest, newCandidates, generation, generationIsNew,
+                latestSequence, drawCount, ct);
+
+            var members = await ledger.LoadMembersAsync(ct);
+            await ledger.InitialiseHedgeAsync(backtest.HedgeWeights, members, latestSequence, ct);
+            await db.SaveChangesAsync(ct);
+            await ledger.FreezeAsync(latestSequence, features, ct);
+            await db.SaveChangesAsync(ct);
+            var hedgeWeights = await ledger.LoadHedgeWeightsAsync(members, ct);
+
+            var decision = await ChooseActiveAsync(db, ledger, backtest, latestSequence, ct);
+            var memberStrategies = members.Select(m => m.Strategy).ToList();
+            var activeStrategy = decision.Source == ProspectiveEvaluator.SourceBacktest
+                ? backtest.Best.Strategy
+                : decision.ActiveName == Backtester.EnsembleName
+                    ? new ScoringStrategy(Backtester.EnsembleName, 0, 0, 0, 0, 0, 0)
+                    : memberStrategies.Concat(allStrategies)
+                        .FirstOrDefault(s => s.Name == decision.ActiveName) ?? backtest.Best.Strategy;
 
             var snapshot = new AnalysisSnapshot
             {
@@ -216,10 +285,13 @@ public class AnalysisService : IAnalysisService
                     : [],
                 Lottery = lottery,
                 Backtest = backtest,
-                ActiveStrategy = backtest.Best.Strategy,
+                ActiveStrategy = activeStrategy,
                 AllStrategies = allStrategies,
                 LearningGeneration = generation,
                 UseAllHistory = useAllHistory,
+                EnsembleMembers = memberStrategies,
+                HedgeWeights = hedgeWeights,
+                Selection = decision,
             };
             lock (state.Sync)
             {
@@ -241,53 +313,36 @@ public class AnalysisService : IAnalysisService
         }
     }
 
-    /// <summary>Saves selection-period winners for reporting, not as future training seeds, and appends a
-    /// performance log row per strategy so improvement over time is auditable.</summary>
-    private static async Task PersistLearningAsync(
-        LottoDbContext db, BacktestReport backtest, int generation, int drawCount, CancellationToken ct)
+    /// <summary>The generation advances once per new latest draw, never on a rebuild of the same
+    /// data. This keeps rebuilds deterministic while letting evolution move on as results arrive.</summary>
+    private static async Task<(int Generation, bool IsNew)> ResolveGenerationAsync(
+        ShadowLedger ledger, int latestSequence, CancellationToken ct)
     {
-        var handWritten = ScoringStrategy.Candidates.Select(s => s.Name).ToHashSet();
-        handWritten.Add(Backtester.EnsembleName); // ensemble is adaptive, not a weight vector to keep
+        bool hasGeneration = int.TryParse(
+            await ledger.GetStateAsync(ShadowLedger.StateGeneration, ct), out int stored);
+        bool hasKey = int.TryParse(
+            await ledger.GetStateAsync(ShadowLedger.StateGenerationKey, ct), out int key);
+        if (!hasGeneration || !hasKey) return (1, true);
+        return latestSequence > key ? (stored + 1, true) : (stored, false);
+    }
 
-        // Survivors are ranked on the same three-plus objective used to select the active
-        // strategy. Average matches are a tie-breaker only, so a candidate cannot survive merely
-        // by improving a different metric.
-        double handWrittenBest = backtest.SelectionStrategies
-            .Where(r => handWritten.Contains(r.Strategy.Name))
-            .Max(r => r.ThreePlusRate);
-        var survivors = backtest.SelectionStrategies
-            .Where(r => !handWritten.Contains(r.Strategy.Name))
-            .OrderByDescending(r => r.ThreePlusRate)
-            .ThenByDescending(r => r.AvgMatches)
-            .Take(StrategyOptimizer.MaxLearnedKept)
-            .Where(r => r.ThreePlusRate >= handWrittenBest)
-            .ToList();
-
-        var existing = await db.LearnedStrategies.ToListAsync(ct);
-        db.LearnedStrategies.RemoveRange(existing);
-        var existingByName = existing.ToDictionary(s => s.Name);
-        foreach (var r in survivors)
+    /// <summary>Evolves the live challenger population and appends one performance log row per
+    /// strategy, so improvement over time is auditable. Fresh GA candidates are bred only from
+    /// training-prefix winners. Admitted challengers are never backtested again; from their birth
+    /// they are judged only by the forward-only shadow ledger. When room is needed, the weakest
+    /// challengers by shrunk prospective reward are retired.</summary>
+    private async Task PersistLearningAsync(
+        LottoDbContext db, ShadowLedger ledger, BacktestReport backtest,
+        IReadOnlyList<ScoringStrategy> freshCandidates, int generation, bool generationIsNew,
+        int latestSequence, int drawCount, CancellationToken ct)
+    {
+        if (generationIsNew)
         {
-            var s = r.Strategy;
-            db.LearnedStrategies.Add(new LearnedStrategy
-            {
-                Name = s.Name,
-                WLongTerm = s.WLongTerm,
-                WRecent = s.WRecent,
-                WGap = s.WGap,
-                WMomentum = s.WMomentum,
-                PairWeight = s.PairWeight,
-                PenaltyWeight = s.PenaltyWeight,
-                WBias = s.WBias,
-                WBonus = s.WBonus,
-                Generation = generation,
-                AvgMatches = r.AvgMatches,
-                RecencyWeightedAvg = r.RecencyWeightedAvg,
-                EvaluatedDraws = r.Evaluated,
-                CreatedUtc = existingByName.TryGetValue(s.Name, out var prev)
-                    ? prev.CreatedUtc
-                    : DateTime.UtcNow,
-            });
+            await ledger.SetStateAsync(ShadowLedger.StateGeneration,
+                generation.ToString(CultureInfo.InvariantCulture), ct);
+            await ledger.SetStateAsync(ShadowLedger.StateGenerationKey,
+                latestSequence.ToString(CultureInfo.InvariantCulture), ct);
+            await EvolvePopulationAsync(db, ledger, backtest, freshCandidates, generation, latestSequence, ct);
         }
 
         // One log row per strategy per dataset size; skip if this draw count was already logged.
@@ -312,6 +367,115 @@ public class AnalysisService : IAnalysisService
         }
 
         await db.SaveChangesAsync(ct);
+    }
+
+    private async Task EvolvePopulationAsync(
+        LottoDbContext db, ShadowLedger ledger, BacktestReport backtest,
+        IReadOnlyList<ScoringStrategy> freshCandidates, int generation, int latestSequence,
+        CancellationToken ct)
+    {
+        var learned = await db.LearnedStrategies.ToListAsync(ct);
+        var live = learned.Where(s => s.Status != LearnedStatus.Retired).ToList();
+        int lastAdmission = int.TryParse(
+            await ledger.GetStateAsync(ShadowLedger.StateAdmissionSequence, ct), out int seq)
+            ? seq
+            : int.MinValue / 2;
+        if (live.Count > 0 && latestSequence - lastAdmission < options.GenerationIntervalDraws) return;
+
+        int admitTarget = Math.Min(options.ChallengersAdmittedPerGeneration, options.MaxLiveChallengers);
+        int room = options.MaxLiveChallengers - live.Count;
+        if (room < admitTarget)
+        {
+            var records = ProspectiveEvaluator.Summarise(await ledger.LoadOutcomesAsync(ct))
+                .ToDictionary(r => r.StrategyName);
+            string? champion = await ledger.GetStateAsync(ShadowLedger.StateActiveName, ct);
+            var retiring = live
+                .Where(s => s.Name != champion &&
+                    records.TryGetValue(s.Name, out var r) && r.Draws >= options.MinDrawsBeforeRetire)
+                .OrderBy(s => records[s.Name].ShrunkReward(options.ShrinkagePseudoDraws))
+                .ThenBy(s => s.Id)
+                .Take(admitTarget - room)
+                .ToList();
+            var retiredNames = retiring.Select(s => s.Name).ToHashSet();
+            var now = DateTime.UtcNow;
+            foreach (var s in retiring)
+            {
+                s.Status = LearnedStatus.Retired;
+                s.RetiredUtc = now;
+            }
+            db.HedgeWeightStates.RemoveRange(
+                await db.HedgeWeightStates.Where(h => retiredNames.Contains(h.StrategyName)).ToListAsync(ct));
+            room += retiring.Count;
+        }
+        if (room <= 0) return;
+
+        var freshNames = freshCandidates.Select(s => s.Name).ToHashSet();
+        var knownNames = learned.Select(s => s.Name).ToHashSet();
+        // Same ordering as the backtest's own selection, so a fresh backtest winner is admitted first.
+        var admitted = backtest.SelectionStrategies
+            .Where(r => freshNames.Contains(r.Strategy.Name) && !knownNames.Contains(r.Strategy.Name))
+            .OrderByDescending(r => r.ThreePlusRate)
+            .ThenByDescending(r => r.AvgMatches)
+            .ThenBy(r => r.Strategy.Name)
+            .Take(Math.Min(room, admitTarget))
+            .ToList();
+        foreach (var r in admitted)
+        {
+            var s = r.Strategy;
+            db.LearnedStrategies.Add(new LearnedStrategy
+            {
+                Name = s.Name,
+                WLongTerm = s.WLongTerm,
+                WRecent = s.WRecent,
+                WGap = s.WGap,
+                WMomentum = s.WMomentum,
+                PairWeight = s.PairWeight,
+                PenaltyWeight = s.PenaltyWeight,
+                WBias = s.WBias,
+                WBonus = s.WBonus,
+                Generation = generation,
+                AvgMatches = r.AvgMatches,
+                RecencyWeightedAvg = r.RecencyWeightedAvg,
+                EvaluatedDraws = r.Evaluated,
+                CreatedUtc = DateTime.UtcNow,
+                BornAfterSequence = latestSequence,
+                Status = LearnedStatus.Challenger,
+            });
+        }
+        if (admitted.Count > 0)
+            await ledger.SetStateAsync(ShadowLedger.StateAdmissionSequence,
+                latestSequence.ToString(CultureInfo.InvariantCulture), ct);
+    }
+
+    /// <summary>Backtest first, then real (prospective) results take over through the promotion
+    /// gate. The decision is persisted so that holds and incumbency survive restarts.</summary>
+    private async Task<SelectionDecision> ChooseActiveAsync(
+        LottoDbContext db, ShadowLedger ledger, BacktestReport backtest, int latestSequence,
+        CancellationToken ct)
+    {
+        var records = ProspectiveEvaluator.Summarise(await ledger.LoadOutcomesAsync(ct));
+        string? currentName = await ledger.GetStateAsync(ShadowLedger.StateActiveName, ct);
+        string? currentSource = await ledger.GetStateAsync(ShadowLedger.StateActiveSource, ct);
+        int promotedAt = int.TryParse(
+            await ledger.GetStateAsync(ShadowLedger.StateActivePromotedAt, ct), out int p) ? p : 0;
+        var decision = ProspectiveEvaluator.Choose(
+            backtest.Best.Strategy.Name, records, currentName, currentSource, promotedAt, latestSequence,
+            new SelectionSettings(options.MinProspectiveDraws, options.PromotionConfidence, options.MinHoldDraws));
+
+        var inv = CultureInfo.InvariantCulture;
+        await ledger.SetStateAsync(ShadowLedger.StateActiveName, decision.ActiveName, ct);
+        await ledger.SetStateAsync(ShadowLedger.StateActiveSource, decision.Source, ct);
+        await ledger.SetStateAsync(ShadowLedger.StateActivePromotedAt, decision.PromotedAtSequence.ToString(inv), ct);
+        await ledger.SetStateAsync(ShadowLedger.StateActiveReason, decision.Reason, ct);
+        await ledger.SetStateAsync(ShadowLedger.StateActiveConfidence,
+            decision.Confidence?.ToString("R", inv) ?? "", ct);
+
+        foreach (var s in await db.LearnedStrategies.Where(s => s.Status != LearnedStatus.Retired).ToListAsync(ct))
+            s.Status = s.Name == decision.ActiveName && decision.Source == ProspectiveEvaluator.SourceProspective
+                ? LearnedStatus.Champion
+                : LearnedStatus.Challenger;
+        await db.SaveChangesAsync(ct);
+        return decision;
     }
 
     public void Invalidate()

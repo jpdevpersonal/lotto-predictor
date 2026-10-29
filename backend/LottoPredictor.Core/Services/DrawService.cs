@@ -34,15 +34,45 @@ public class DrawService : IDrawService
     private readonly IDbContextFactory<LottoDbContext> contextFactory;
     private readonly IAnalysisService analysis;
     private readonly ILotterySelection lotterySelection;
+    private readonly AnalysisOptions options;
 
     public DrawService(
         IDbContextFactory<LottoDbContext> contextFactory,
         IAnalysisService analysis,
-        ILotterySelection? lotterySelection = null)
+        ILotterySelection? lotterySelection = null,
+        AnalysisOptions? options = null)
     {
         this.contextFactory = contextFactory;
         this.analysis = analysis;
         this.lotterySelection = lotterySelection ?? new DefaultLotterySelection();
+        this.options = options ?? new AnalysisOptions();
+    }
+
+    /// <summary>Feeds saved results to the prospective learning ledger. This runs after the results
+    /// are committed and in its own context, so a learning failure never blocks data entry. The
+    /// failure is recorded, and the affected lines are simply left unscored.</summary>
+    private async Task RunLedgerAsync(Func<ShadowLedger, Task> action, CancellationToken ct)
+    {
+        try
+        {
+            await using var db = await contextFactory.CreateDbContextAsync(ct);
+            await action(new ShadowLedger(db, lotterySelection.Current, options));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            try
+            {
+                await using var db = await contextFactory.CreateDbContextAsync(ct);
+                var ledger = new ShadowLedger(db, lotterySelection.Current, options);
+                await ledger.SetStateAsync(ShadowLedger.StateLastError,
+                    $"{DateTime.UtcNow:O} {ex.GetType().Name}: {ex.Message}", ct);
+                await db.SaveChangesAsync(ct);
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // Learning state is best-effort; the draw itself is already saved.
+            }
+        }
     }
 
     public async Task<IReadOnlyList<DrawDto>> GetDrawsAsync(int limit = 50, CancellationToken ct = default)
@@ -180,6 +210,7 @@ public class DrawService : IDrawService
 
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
+        await RunLedgerAsync(ledger => ledger.OnDrawsAddedAsync([draw], ct), ct);
 
         analysis.Invalidate();
         return ToDto(draw);
@@ -216,6 +247,7 @@ public class DrawService : IDrawService
         UpdatePredictionEvaluations(evaluatedPredictions, draw, lottery);
 
         await db.SaveChangesAsync(ct);
+        await RunLedgerAsync(ledger => ledger.OnDrawEditedAsync(draw, ct), ct);
         analysis.Invalidate();
         return ToDto(draw);
     }
@@ -282,6 +314,7 @@ public class DrawService : IDrawService
 
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
+        await RunLedgerAsync(ledger => ledger.OnDrawsAddedAsync(added, ct), ct);
 
         analysis.Invalidate();
         return added.Select(ToDto).ToList();

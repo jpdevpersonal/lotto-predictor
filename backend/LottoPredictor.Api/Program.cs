@@ -124,6 +124,8 @@ using (var scope = app.Services.CreateScope())
         }
 #pragma warning restore EF1002
 
+        await LearningSchema.EnsureAsync(db);
+
         var bonusMatchesSql = lottery.BonusSharesMainPool
             ? "CASE WHEN d.\"Bonus\" IN (p.\"P1\", p.\"P2\", p.\"P3\", p.\"P4\", p.\"P5\", p.\"P6\") THEN 1 ELSE 0 END"
             : "NULL";

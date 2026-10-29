@@ -224,6 +224,9 @@ export interface LearnedStrategyDto {
   recencyWeightedAvg: number;
   evaluatedDraws: number;
   createdUtc: string;
+  status: string;
+  bornAfterSequence: number;
+  retiredUtc: string | null;
 }
 
 export interface PerformancePointDto {
@@ -260,4 +263,64 @@ export interface LearningDto {
   hedgeWeights: HedgeWeightDto[];
   learnedStrategies: LearnedStrategyDto[];
   history: PerformancePointDto[];
+  prospective: ProspectiveLearningDto | null;
+}
+
+export interface SelectionDto {
+  activeName: string;
+  source: "backtest" | "prospective" | string;
+  reason: string;
+  confidence: number | null;
+  prospectiveDraws: number;
+  minProspectiveDraws: number;
+  promotedAtSequence: number;
+}
+
+export interface ProspectiveRecordDto {
+  strategyName: string;
+  kind: string;
+  status: string | null;
+  draws: number;
+  threePlusHits: number;
+  expectedThreePlusHits: number;
+  meanMatches: number;
+  meanExpectedMatches: number;
+  meanScoreZ: number;
+  scoreZTotal: number;
+  meanReward: number;
+  shrunkReward: number;
+  hedgeWeight: number | null;
+}
+
+export interface ProspectivePointDto {
+  cutoffSequence: number;
+  cumulativeExcessMatches: number;
+  cumulativeScoreZ: number;
+}
+
+export interface ProspectiveSeriesDto {
+  strategyName: string;
+  points: ProspectivePointDto[];
+}
+
+export interface CoefficientDto {
+  feature: string;
+  weight: number;
+}
+
+export interface OnlineModelDto {
+  updates: number;
+  updatedThroughSequence: number;
+  coefficients: CoefficientDto[];
+}
+
+export interface ProspectiveLearningDto {
+  selection: SelectionDto;
+  scoredDraws: number;
+  pendingLines: number;
+  lastScoredSequence: number | null;
+  leaderboard: ProspectiveRecordDto[];
+  series: ProspectiveSeriesDto[];
+  onlineModel: OnlineModelDto | null;
+  lastError: string | null;
 }

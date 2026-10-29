@@ -52,7 +52,7 @@ public class PredictionService(
 
         var result = strategy.Name == Backtester.EnsembleName
             ? PredictionEngine.GenerateEnsemble(
-                snapshot.Features, snapshot.AllStrategies, snapshot.HedgeWeights, Backtester.EnsembleName, excludedMain)
+                snapshot.Features, snapshot.EnsembleMembers, snapshot.HedgeWeights, Backtester.EnsembleName, excludedMain)
             : PredictionEngine.Generate(snapshot.Features, strategy, excludedMain);
         var luckyStars = snapshot.LuckyStarFeatures is null
             ? null
@@ -271,7 +271,7 @@ public class PredictionService(
         var strategy = snapshot.ActiveStrategy;
         return strategy.Name == Backtester.EnsembleName
             ? PredictionEngine.GenerateEnsemble(
-                features, snapshot.AllStrategies, snapshot.HedgeWeights, Backtester.EnsembleName, excludedNumbers)
+                features, snapshot.EnsembleMembers, snapshot.HedgeWeights, Backtester.EnsembleName, excludedNumbers)
             : PredictionEngine.Generate(features, strategy, excludedNumbers);
     }
 
@@ -286,18 +286,8 @@ public class PredictionService(
         var strategy = snapshot.ActiveStrategy;
         if (strategy.Name != Backtester.EnsembleName)
             return (PredictionEngine.ScoreNumbers(features, strategy), strategy);
-
-        double total = snapshot.AllStrategies.Sum(s => snapshot.HedgeWeights.GetValueOrDefault(s.Name));
-        var parts = snapshot.AllStrategies
-            .Select(s => (PredictionEngine.ScoreNumbers(features, s),
-                total > 0 ? snapshot.HedgeWeights.GetValueOrDefault(s.Name) / total : 1.0 / snapshot.AllStrategies.Count))
-            .ToList();
-        var blended = PredictionEngine.BlendScores(parts);
-        double pairW = snapshot.AllStrategies.Sum(s =>
-            (total > 0 ? snapshot.HedgeWeights.GetValueOrDefault(s.Name) / total : 1.0 / snapshot.AllStrategies.Count) * s.PairWeight);
-        double penW = snapshot.AllStrategies.Sum(s =>
-            (total > 0 ? snapshot.HedgeWeights.GetValueOrDefault(s.Name) / total : 1.0 / snapshot.AllStrategies.Count) * s.PenaltyWeight);
-        return (blended, new ScoringStrategy(Backtester.EnsembleName, 0, 0, 0, 0, pairW, penW));
+        return PredictionEngine.EnsembleScores(
+            features, snapshot.EnsembleMembers, snapshot.HedgeWeights, Backtester.EnsembleName);
     }
 
     public async Task<PredictionDto?> GetLatestAsync(CancellationToken ct = default)
@@ -341,13 +331,13 @@ public class PredictionService(
         Dictionary<int, double> scores;
         if (prediction.StrategyName == Backtester.EnsembleName)
         {
-            scores = PredictionEngine.BlendScores(snapshot.AllStrategies.Select(s => (
-                PredictionEngine.ScoreNumbers(fs, s),
-                snapshot.HedgeWeights.GetValueOrDefault(s.Name))));
+            scores = PredictionEngine.EnsembleScores(
+                fs, snapshot.EnsembleMembers, snapshot.HedgeWeights, Backtester.EnsembleName).Scores;
         }
         else
         {
-            var strategy = snapshot.AllStrategies.FirstOrDefault(s => s.Name == prediction.StrategyName)
+            var strategy = snapshot.EnsembleMembers.Concat(snapshot.AllStrategies)
+                .FirstOrDefault(s => s.Name == prediction.StrategyName)
                 ?? snapshot.ActiveStrategy;
             scores = PredictionEngine.ScoreNumbers(fs, strategy);
         }

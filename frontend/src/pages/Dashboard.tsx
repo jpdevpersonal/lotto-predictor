@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { ProspectiveLearning } from "../components/ProspectiveLearning";
 import type {
   AnalysisStatusDto,
   BacktestingDto,
@@ -641,11 +642,11 @@ export default function Dashboard({
             {learning.refreshedUtc
               ? `, refreshed ${learning.refreshedUtc.replace("T", " ").slice(0, 16)} UTC`
               : ""}
-            : each analysis replays training from clean built-in seeds using
-            only pre-holdout draws. One generation of mutations, crossovers and
-            random candidates competes on three-plus hits, with average matches
-            as a tie-breaker. Saved winners are for reporting, not reused as
-            training seeds. An online hedge ensemble also competes. Active strategy:{" "}
+            . Each analysis breeds a new generation from training-prefix winners and
+            validates it on a chronological holdout. The best fresh candidates then
+            join a live challenger population. From then on they are judged only on
+            real draws that happen after they were frozen, and the weakest are
+            retired. Active strategy:{" "}
             <strong>{learning.activeStrategyName}</strong>
             {learning.activeIsLearned && (
               <span className="badge">Learned</span>
@@ -661,13 +662,18 @@ export default function Dashboard({
             {learning.uniformity.assessment}
           </p>
 
+          {learning.prospective && (
+            <ProspectiveLearning prospective={learning.prospective} />
+          )}
+
           {learning.hedgeWeights.length > 0 && (
             <>
               <h3>Hedge ensemble weights</h3>
               <p className="muted">
-                Learned online during the walk-forward run — strategies that
-                achieved more three-plus hits get exponentially more say in the blended
-                prediction.
+                Persistent across draws. After each real result, every live strategy
+                gains or loses weight exponentially in its reward (how highly it ranked
+                the drawn balls, plus a three-plus bonus). A small share is mixed back
+                toward uniform, so a strategy can recover.
               </p>
               <table>
                 <thead>
@@ -693,7 +699,9 @@ export default function Dashboard({
               <thead>
                 <tr>
                   <th>Learned strategy</th>
+                  <th>Status</th>
                   <th>Generation</th>
+                  <th>Live after draw</th>
                   <th>Selection Avg Matches</th>
                   <th>Selection Recent Avg</th>
                   <th>Discovered (UTC)</th>
@@ -703,7 +711,9 @@ export default function Dashboard({
                 {learning.learnedStrategies.map((s) => (
                   <tr key={s.name}>
                     <td title={s.weights}>{s.name}</td>
+                    <td>{s.status}</td>
                     <td>{s.generation}</td>
+                    <td>{s.bornAfterSequence || "—"}</td>
                     <td>{s.avgMatches.toFixed(4)}</td>
                     <td>{s.recencyWeightedAvg.toFixed(4)}</td>
                     <td>{s.createdUtc.replace("T", " ").slice(0, 16)}</td>
@@ -713,8 +723,7 @@ export default function Dashboard({
             </table>
           ) : (
             <p className="muted">
-              No genetic candidate currently beats the built-in ones on the
-              selection data.
+              No challengers yet. Recalculate to admit the first generation.
             </p>
           )}
 
