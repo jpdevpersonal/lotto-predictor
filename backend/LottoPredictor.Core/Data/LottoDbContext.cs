@@ -10,6 +10,10 @@ public class LottoDbContext(DbContextOptions<LottoDbContext> options) : DbContex
     public DbSet<PredictionEvaluation> PredictionEvaluations => Set<PredictionEvaluation>();
     public DbSet<LearnedStrategy> LearnedStrategies => Set<LearnedStrategy>();
     public DbSet<StrategyPerformanceLog> StrategyPerformanceLogs => Set<StrategyPerformanceLog>();
+    public DbSet<ShadowPrediction> ShadowPredictions => Set<ShadowPrediction>();
+    public DbSet<HedgeWeightState> HedgeWeightStates => Set<HedgeWeightState>();
+    public DbSet<OnlineModelState> OnlineModelStates => Set<OnlineModelState>();
+    public DbSet<LearningStateEntry> LearningStateEntries => Set<LearningStateEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -30,5 +34,11 @@ public class LottoDbContext(DbContextOptions<LottoDbContext> options) : DbContex
             .HasForeignKey(evaluation => evaluation.EvaluatedDrawId)
             .OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<StrategyPerformanceLog>().HasIndex(l => l.DrawCount);
+        modelBuilder.Entity<ShadowPrediction>()
+            .HasIndex(s => new { s.StrategyName, s.CutoffSequence }).IsUnique();
+        modelBuilder.Entity<ShadowPrediction>().HasIndex(s => s.CutoffSequence);
+        modelBuilder.Entity<HedgeWeightState>().HasIndex(h => h.StrategyName).IsUnique();
+        modelBuilder.Entity<OnlineModelState>().HasIndex(m => m.Name).IsUnique();
+        modelBuilder.Entity<LearningStateEntry>().HasKey(e => e.Key);
     }
 }

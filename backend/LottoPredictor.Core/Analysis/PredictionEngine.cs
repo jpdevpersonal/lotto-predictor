@@ -21,6 +21,28 @@ public static class PredictionEngine
     /// <summary>Per-number scores under a strategy. Key = ball number.</summary>
     public static Dictionary<int, double> ScoreNumbers(FeatureSet fs, ScoringStrategy s)
     {
+        var (numbers, x) = FeatureMatrix(fs);
+        double[] w = [s.WLongTerm, s.WRecent, s.WGap, s.WMomentum, s.WBias, s.WBonus];
+        var scores = new Dictionary<int, double>(numbers.Length);
+        for (int i = 0; i < numbers.Length; i++)
+        {
+            double score = 0;
+            for (int j = 0; j < FeatureCount; j++) score += w[j] * x[i][j];
+            scores[numbers[i]] = score;
+        }
+        return scores;
+    }
+
+    public const int FeatureCount = 6;
+
+    /// <summary>Order of the columns returned by <see cref="FeatureMatrix"/>; it matches the
+    /// strategy weights long-term, recent, gap, momentum, bias, bonus.</summary>
+    public static IReadOnlyList<string> FeatureNames { get; } =
+        ["long-term", "recent", "gap", "momentum", "bias", "bonus"];
+
+    /// <summary>The standardised per-ball feature vectors every strategy scores against.</summary>
+    public static (int[] Numbers, double[][] X) FeatureMatrix(FeatureSet fs)
+    {
         var eligible = fs.Numbers.Where(f => f.Number <= fs.Pool.NextPoolSize).ToArray();
 
         var zFreq = ZScores(eligible, f => f.FreqRateShrunk);
@@ -28,20 +50,23 @@ public static class PredictionEngine
         var zMomentum = ZScores(eligible, f => f.RecentVsLongTerm);
         var zBonus = ZScores(eligible, f => f.BonusRate);
 
-        var scores = new Dictionary<int, double>(eligible.Length);
+        var numbers = new int[eligible.Length];
+        var x = new double[eligible.Length][];
         for (int i = 0; i < eligible.Length; i++)
         {
             var f = eligible[i];
-            double gapTerm = Math.Clamp(f.GapRatio - 1.0, -2.0, 2.0);
-            scores[f.Number] =
-                s.WLongTerm * zFreq[i] +
-                s.WRecent * zRecent[i] +
-                s.WGap * gapTerm +
-                s.WMomentum * Math.Clamp(zMomentum[i], -3.0, 3.0) +
-                s.WBias * Math.Clamp(f.BiasZ, -3.0, 3.0) +
-                s.WBonus * Math.Clamp(zBonus[i], -3.0, 3.0);
+            numbers[i] = f.Number;
+            x[i] =
+            [
+                zFreq[i],
+                zRecent[i],
+                Math.Clamp(f.GapRatio - 1.0, -2.0, 2.0),
+                Math.Clamp(zMomentum[i], -3.0, 3.0),
+                Math.Clamp(f.BiasZ, -3.0, 3.0),
+                Math.Clamp(zBonus[i], -3.0, 3.0),
+            ];
         }
-        return scores;
+        return (numbers, x);
     }
 
     public static PredictionResult Generate(
@@ -199,15 +224,25 @@ public static class PredictionEngine
         string ensembleName,
         IReadOnlySet<int>? excludedNumbers = null)
     {
-        double total = strategies.Sum(s => weights.GetValueOrDefault(s.Name));
-        var parts = strategies
-            .Select(s => (ScoreNumbers(fs, s), total > 0 ? weights.GetValueOrDefault(s.Name) / total : 1.0 / strategies.Count))
-            .ToList();
-        var blended = BlendScores(parts);
-        double pairW = strategies.Sum(s => (total > 0 ? weights.GetValueOrDefault(s.Name) / total : 1.0 / strategies.Count) * s.PairWeight);
-        double penW = strategies.Sum(s => (total > 0 ? weights.GetValueOrDefault(s.Name) / total : 1.0 / strategies.Count) * s.PenaltyWeight);
-        var pseudo = new ScoringStrategy(ensembleName, 0, 0, 0, 0, pairW, penW);
+        var (blended, pseudo) = EnsembleScores(fs, strategies, weights, ensembleName);
         return GenerateFromScores(fs, blended, pseudo, excludedNumbers);
+    }
+
+    /// <summary>Blended score map plus the weight-averaged pair and penalty settings.</summary>
+    public static (Dictionary<int, double> Scores, ScoringStrategy Strategy) EnsembleScores(
+        FeatureSet fs,
+        IReadOnlyList<ScoringStrategy> strategies,
+        IReadOnlyDictionary<string, double> weights,
+        string ensembleName)
+    {
+        double total = strategies.Sum(s => weights.GetValueOrDefault(s.Name));
+        double WeightOf(ScoringStrategy s) =>
+            total > 0 ? weights.GetValueOrDefault(s.Name) / total : 1.0 / strategies.Count;
+        var parts = strategies.Select(s => (ScoreNumbers(fs, s), WeightOf(s))).ToList();
+        var blended = BlendScores(parts);
+        double pairW = strategies.Sum(s => WeightOf(s) * s.PairWeight);
+        double penW = strategies.Sum(s => WeightOf(s) * s.PenaltyWeight);
+        return (blended, new ScoringStrategy(ensembleName, 0, 0, 0, 0, pairW, penW));
     }
 
     /// <summary>Mean clipped deviation of observed pair co-occurrence from uniform expectation.</summary>

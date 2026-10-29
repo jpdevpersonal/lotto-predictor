@@ -50,8 +50,9 @@ public static class Backtester
 {
     public const string EnsembleName = "hedge-ensemble";
 
-    /// <summary>Multiplicative-weights learning rate for the three-plus hit indicator.</summary>
-    private const double HedgeEta = 0.10;
+    /// <summary>Multiplicative-weights learning rate on the composite reward
+    /// (<see cref="LearningSignals.Reward"/>). Shared by the backtest and the live hedge.</summary>
+    public const double HedgeEta = 0.05;
 
     public static BacktestReport Run(
         IReadOnlyList<DrawEvent> draws,
@@ -62,7 +63,8 @@ public static class Backtester
         int? configuredPoolSize = null,
         DateOnly? poolExpansionDate = null,
         Action<int, int>? onProgress = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Action<int, FeatureSet, DrawEvent>? onStep = null)
     {
         if (draws.Count <= warmup + 2)
             throw new InvalidOperationException($"Need more than {warmup + 2} draws to backtest.");
@@ -93,6 +95,8 @@ public static class Backtester
             var actual = draws[i].Numbers;
             var fs = FeatureCalculator.Compute(
                 prefix, configuredPoolSize, poolExpansionDate, draws[i].Date);
+            onStep?.Invoke(i, fs, draws[i]);
+            double stepThreePlus = ThreePlusProbability(fs.Pool.NextPoolSize, fs.PickCount);
 
             var stepScores = new List<(ScoringStrategy Strategy, Dictionary<int, double> Scores, int Matches)>(strategies.Count);
             foreach (var strategy in strategies)
@@ -118,7 +122,10 @@ public static class Backtester
             double norm = 0;
             foreach (var t in stepScores)
             {
-                hedge[t.Strategy.Name] *= Math.Exp(HedgeEta * (t.Matches >= 3 ? 1 : 0));
+                double reward = LearningSignals.Reward(
+                    LearningSignals.ScoreZ(LearningSignals.Standardise(t.Scores), actual),
+                    t.Matches >= 3, stepThreePlus);
+                hedge[t.Strategy.Name] *= Math.Exp(HedgeEta * reward);
                 norm += hedge[t.Strategy.Name];
             }
             if (norm <= 0 || double.IsNaN(norm) || double.IsInfinity(norm))

@@ -125,22 +125,67 @@ HTTP 409 Problem Details. See [Analysis.http](backend/LottoPredictor.Api/Analysi
 
 ### How learning works
 
-- **Genetic optimizer** (`StrategyOptimizer`): each rebuild first ranks built-in seeds on a
-  training prefix ending before the final holdout, then generates one deterministic generation.
-  Candidates compete on selection-period three-plus hits with average matches as tie-breaker.
-  Selection survivors are persisted for reporting only. Previously saved winners are never
-  reused as seeds: they may already have seen today's historical holdout in earlier rebuilds.
-  Repeated checks on overlapping historical windows remain exploratory; confirm any apparent
-  advantage using predictions recorded before genuinely future draws.
-- **Hedge ensemble** (`hedge-ensemble`): inside the backtest, every strategy's per-number scores
-  are blended using multiplicative weights updated after each draw (`w ×= e^(0.1·I(matches≥3))`).
-  Its prediction always uses past weights only; it competes as a predefined online algorithm.
+Learning is **forward-only**. A strategy is judged and rewarded only on draws that happened after
+its prediction was frozen. Backtests are still used to bootstrap, but real results take over as
+they accumulate.
+
+- **Shadow ledger** (`ShadowLedger`, table `ShadowPredictions`): after every saved result (and
+  after each recalculation), every live strategy freezes the line it would play for the next
+  draw. It also stores its standardised per-ball scores. When that draw is saved, the lines are
+  scored: matches, three-plus, and the reward below. Draws added in one request are processed in
+  sequence order, so each step sees only earlier draws. Correcting a draw re-scores the lines
+  that targeted it. Unscored lines that could have seen it are frozen again. Scored lines that
+  saw it are marked invalid and excluded. Hedge and online-model updates already applied are not
+  rewound. Learning runs after the result is committed, so a failure never blocks data entry; it
+  is recorded and shown on the dashboard.
+- **Composite reward** (`LearningSignals`):
+  `reward = scoreZ + 0.25·(I(3+) − p₃)/√(p₃(1−p₃))`. `scoreZ` is the standardised sum of the
+  drawn balls' scores; under fair draws it has mean 0 and variance 1 exactly, whatever the
+  ranking. It is a dense signal for every draw, unlike three-plus hits, which occur about once in
+  92 draws for UK Lotto. The three-plus term keeps the original objective in the mix. Both terms are 0 in
+  expectation for a fair machine.
+- **Persistent hedge ensemble** (`hedge-ensemble`, table `HedgeWeightStates`): weights start
+  from the backtest's final walk-forward weights. After each real draw they are updated as
+  `log w += 0.05·reward`, followed by a 1% fixed-share mix toward uniform, so a strategy that
+  falls behind can recover. The weights carry over between draws and restarts instead of being
+  rebuilt from uniform on every analysis. The backtest uses the same reward.
+- **Champion/challenger evolution** (`StrategyOptimizer`, `LearnedStrategies.Status`): each
+  rebuild breeds a deterministic generation from training-prefix winners. The generation number
+  advances only when a new draw exists, so rebuilding the same data is reproducible. At most once
+  every 8 new draws, the 4 best fresh candidates (by the backtest's selection metric) join a live
+  population of up to 16 challengers. Each records `BornAfterSequence`. Live challengers are never
+  backtested again: they are judged only by the shadow ledger from their birth onward. When room
+  is needed, the challenger with the lowest **shrunk** prospective reward
+  (`mean·n/(n+20)`) is retired, but only after 20 scored draws, and never the current champion.
+- **Online model** (`OnlineBallModel`, `online-logit`): a per-ball conditional-logit model over
+  the same six standardised features. After each draw it takes one AdaGrad gradient step, with
+  L2 shrinkage toward the fair-machine prior of zero weights, using features from earlier draws
+  only. On a fair machine its coefficients stay near zero; a real bias would pull them away.
+  The first recalculation warm-starts it walk-forward over the evaluation window. It then joins
+  the hedge ensemble and the ledger like any other strategy.
+- **Promotion gate** (`ProspectiveEvaluator`): the active strategy comes from the backtest until
+  100 prospective draws are scored. After that the incumbent (the hedge ensemble by default)
+  is kept unless a challenger with at least 100 scored draws beats it on a **paired** test of
+  per-draw reward. The test needs Bonferroni-corrected one-sided confidence of
+  `1 − 0.05/m` over the `m` contenders. The challenger's three-plus rate must also not be credibly
+  below random (Beta posterior). A promoted strategy is held for at least 20 draws. The decision
+  and its reason are persisted in `LearningStateEntries` and shown on the dashboard.
 - **Bias detection**: the per-number bias z-score and the `bias-detector` strategy target the only
-  edge that could really exist — a physically biased machine or ball set. The chi-square
+  edge that could really exist: a physically biased machine or ball set. The chi-square
   uniformity verdict on the dashboard reports whether any such bias is measurable (currently:
   none, p ≈ 0.98).
-- **Performance registry**: every rebuild logs each strategy's results to
-  `StrategyPerformanceLogs`, so improvement (or the honest lack of it) is auditable over time.
+- **Performance registry**: every rebuild logs each strategy's backtest results to
+  `StrategyPerformanceLogs`. The dashboard's prospective leaderboard and chart show each live
+  strategy's cumulative matches above random expectation and cumulative score z on real draws.
+  With no edge, these wander around zero with spread growing like √draws.
+
+All settings live in `AnalysisOptions`. New tables and columns are created on startup by
+`LearningSchema`, so existing databases upgrade in place.
+
+**Limitations.** If draws are independent and uniform (as the χ² test suggests), every reward
+has mean zero. No amount of learning can then produce a lasting edge; the system is designed to
+show that honestly rather than chase noise. Prospective evidence accumulates at one data point
+per draw, so promotions will be rare and slow by design.
 
 ### Three-plus portfolios and API changes
 
@@ -205,7 +250,7 @@ Saved predictions and candidate lines include both the main-number and Lucky Sta
 | `GET /api/predictions/history` | Prediction history with match results |
 | `GET /api/statistics` | Per-number and combination-level statistics |
 | `GET /api/backtesting` | Walk-forward results, random baseline, verdict |
-| `GET /api/learning` | Learning generation, learned strategies, hedge weights, uniformity test, performance history |
+| `GET /api/learning` | Learning generation, learned strategies (with challenger status), live hedge weights, uniformity test, performance history, and `prospective` (selection decision, forward-only leaderboard, cumulative series, online-model coefficients) |
 
 All endpoints accept `X-Lottery: uk-lotto`, `X-Lottery: euromillions`, or `X-Lottery: set-for-life`.
 POST, PUT, PATCH, and DELETE requests under `/api` also require `X-Api-Key`. If the server has no

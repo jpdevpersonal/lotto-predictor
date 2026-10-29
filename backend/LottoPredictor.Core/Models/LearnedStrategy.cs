@@ -19,4 +19,16 @@ public class LearnedStrategy
     public double RecencyWeightedAvg { get; set; }
     public int EvaluatedDraws { get; set; }
     public DateTime CreatedUtc { get; set; }
+    /// <summary>Latest draw sequence known when the strategy was created. Only later draws,
+    /// scored through the shadow ledger, count as evidence for it.</summary>
+    public int BornAfterSequence { get; set; }
+    public string Status { get; set; } = LearnedStatus.Challenger;
+    public DateTime? RetiredUtc { get; set; }
+}
+
+public static class LearnedStatus
+{
+    public const string Challenger = "Challenger";
+    public const string Champion = "Champion";
+    public const string Retired = "Retired";
 }
